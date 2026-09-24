@@ -109,6 +109,27 @@ solo cuando lo que vuelve es demasiado corto o parece ruido. Se cambia con
 Las dos rutas reciben **la misma imagen** ya enderezada y escalada, para que la
 comparación mida el motor y no el preprocesado.
 
+## Un solo modelo, aunque llamen ocho a la vez
+
+El modelo de PaddleOCR se construye **una vez** y se comparte, con doble
+comprobación bajo candado. `functools.lru_cache` no basta: protege el diccionario de
+la caché, pero no impide que varios hilos ejecuten la función a la vez cuando todos
+fallan la caché al arrancar. Ocho hilos entraban, ocho construían un `PaddleOCR`, uno
+ganaba la caché y los otros siete quedaban tirados **con su memoria de GPU ya
+reservada**.
+
+En un proceso por lotes eso es lento. En un servidor con peticiones concurrentes es
+peor: un modelo por petición agota la VRAM y el proceso muere sin decir por qué.
+
+La **inferencia también se serializa**, y no cuesta nada: reconocer una imagen son
+0,22 s en GPU frente al segundo y medio que tarda bajarse el archivo. El paralelismo
+que importa es el de la entrada/salida, no el del OCR. Paddle tampoco garantiza que
+un predictor se pueda usar desde varios hilos.
+
+Para escalar en servidor, el mismo principio: **un proceso, un modelo**, y varios
+procesos detrás de una cola si hace falta más — no varios modelos dentro del mismo
+proceso.
+
 ## `con_que` no es decorativo
 
 Cada lectura devuelve qué la produjo: `pypdf`, `PyMuPDF`, `python-docx`,

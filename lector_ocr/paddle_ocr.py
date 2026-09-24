@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import functools
 import os
+import threading
 
 # CUANTOS NUCLEOS PUEDE USAR. Esto hay que fijarlo ANTES de que se importe paddle:
 # despues ya no se lo lee. En la maquina de RevOps venia en 1 sobre un procesador de
@@ -126,13 +127,45 @@ def dispositivo() -> tuple[str, str]:
     return "gpu", f"{cuantas} GPU(s) visibles"
 
 
-@functools.lru_cache(maxsize=1)
+# UNA SOLA INSTANCIA, Y DE VERDAD. Aqui habia un @functools.lru_cache, que protege
+# el diccionario de la cache pero NO impide que varios hilos ejecuten la funcion a la
+# vez cuando todos fallan la cache al arrancar: los ocho entraban, los ocho
+# construian un PaddleOCR, uno ganaba la cache y los otros siete quedaban tirados
+# habiendo reservado ya su memoria en la GPU. En la corrida del 24-sep-2026 se veian
+# seis 'Creating model' por cada tipo de modelo.
+#
+# En un servidor esto es peor que lento: un modelo por peticion concurrente agota la
+# VRAM y el proceso muere sin decir por que.
+_instancia = None
+_candado_motor = threading.Lock()
+
+# La inferencia tambien se serializa. Paddle no garantiza que un predictor se pueda
+# usar desde varios hilos, y aqui no cuesta nada: reconocer una imagen son 0,22 s en
+# GPU y bajarse el archivo segundo y medio. El paralelismo que importa es el de la
+# descarga, no el del OCR.
+_candado_inferencia = threading.Lock()
+
+
 def _motor():
-    """La instancia, una sola vez.
+    """La instancia compartida. Se construye una vez, pase lo que pase.
+
+    Doble comprobacion: la primera sin candado para que el caso normal -- ya
+    construida -- no pague sincronizacion, y la segunda dentro para que dos hilos
+    que lleguen juntos no la construyan dos veces.
 
     Cargar los modelos tarda entre cinco y quince segundos. Crear un PaddleOCR por
     archivo convertiria una carpeta de 349 documentos en una hora de arranques.
     """
+    global _instancia
+    if _instancia is not None:
+        return _instancia
+    with _candado_motor:
+        if _instancia is None:
+            _instancia = _construir()
+        return _instancia
+
+
+def _construir():
     from paddleocr import PaddleOCR
 
     # Los tres clasificadores auxiliares se apagan a proposito: enderezar la pagina
@@ -219,11 +252,14 @@ def leer(imagen, confianza_minima: float = CONFIANZA_MINIMA) -> tuple[str, dict]
 
     try:
         motor = _motor()
+        # El arreglo se prepara FUERA del candado: es trabajo de CPU puro y no toca
+        # el predictor, asi que no hay razon para que un hilo espere por el.
         arreglo = _como_arreglo(imagen)
-        try:
-            salida = motor.predict(arreglo)          # 3.x
-        except AttributeError:
-            salida = motor.ocr(arreglo)              # 2.x
+        with _candado_inferencia:
+            try:
+                salida = motor.predict(arreglo)      # 3.x
+            except AttributeError:
+                salida = motor.ocr(arreglo)          # 2.x
         trozos = _fragmentos(salida)
     except Exception as error:  # noqa: BLE001
         return "", {"error": f"PaddleOCR failed ({type(error).__name__}: {error})"[:160]}
