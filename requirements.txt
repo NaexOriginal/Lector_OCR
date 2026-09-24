@@ -1,0 +1,43 @@
+# Lectura de documentos y OCR. Versiones fijadas: son las que se midieron.
+#
+# ORDEN: primero esto, y DESPUES paddlepaddle, que no sale de PyPI (ver el final).
+
+# --- lectores nativos, los que devuelven el texto tal cual esta en el archivo ---
+pypdf==6.18.0             # capa de texto de un PDF
+pymupdf==1.26.6           # rasterizado para OCR, y segundo intento de texto
+pikepdf==10.13.0          # adjuntos de los PDF portfolio
+python-docx==1.2.0        # .docx
+extract-msg==0.56.1       # correos .msg
+openpyxl==3.1.5           # .xlsx
+
+# --- OCR ---
+pillow==11.4.0
+numpy==2.3.5
+pytesseract==0.3.13       # necesita el binario de Tesseract, ver abajo
+paddleocr==3.7.0
+
+# --------------------------------------------------------------------------- #
+# 1. TESSERACT no es un paquete de Python: pytesseract solo lo invoca.
+#
+#     winget install UB-Mannheim.TesseractOCR
+#
+#    Si no esta, el sistema NO se rompe: disponible() lo detecta y la lectura
+#    devuelve el motivo como cualquier otro fallo.
+#
+# 2. PADDLEPADDLE no se instala desde PyPI, y hay que elegir CPU o GPU. Ni
+#    paddleocr ni paddlex fijan su version, asi que sin esto pip resuelve una
+#    cualquiera.
+#
+#    CPU:
+#        pip install paddlepaddle==3.2.0 \
+#            -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+#
+#    GPU (17 veces mas rapido: 3,83 s -> 0,22 s por imagen, medido):
+#        pip install paddlepaddle-gpu==3.3.1 \
+#            -i https://www.paddlepaddle.org.cn/packages/stable/cu129/
+#
+#    La rueda cu129 hace falta para las GPU Blackwell (sm_120), que necesitan
+#    CUDA 12.8 o superior. Con una rueda cu118 o cu126 el import funciona y la
+#    GPU no se usa -- y eso es peor que un error, porque no se nota.
+#
+#    Para comprobar cual se esta usando de verdad:  python leer.py --diagnostico

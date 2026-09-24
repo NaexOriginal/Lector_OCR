@@ -1,0 +1,25 @@
+# Entornos
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Nada de documentos: este repositorio es codigo, no expedientes.
+*.pdf
+*.docx
+*.doc
+*.msg
+*.xlsx
+*.xls
+*.zip
+*.jpg
+*.jpeg
+*.png
+*.tif
+*.tiff
+
+# Credenciales y salidas
+.env
+*.bak
+salida/
+resultados/
