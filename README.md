@@ -1,19 +1,62 @@
 # lector_ocr
 
-De un archivo a su texto, con OCR **solo cuando hace falta** y diciendo siempre
-quién lo leyó.
+De un archivo a su texto, y de su texto a **la carpeta que le toca**. Con OCR solo
+cuando hace falta, y diciendo siempre quién lo leyó y con qué se decidió.
 
 ```python
-from lector_ocr import leer_con_detalle
+from lector_ocr import leer_con_detalle, donde_archivar
 
 texto, motivo, con_que = leer_con_detalle("pdf", datos, paginas=2)
+
+destino = donde_archivar("Notice of Motion.pdf", datos, "Foreclosure")
+destino.carpeta      # '03_Litigation/Motions'
+destino.se_decidio   # 'el nombre'
 ```
 
 ```
 python leer.py documento.pdf
-python leer.py escaneo.pdf --motor paddle --paginas 4
+python leer.py escaneo.pdf --motor paddle --plantilla FCRA
 python leer.py --diagnostico
 ```
+
+## Archivar: de qué tipo es y adónde va
+
+Una segunda escalera, encima de la lectura, y con la misma regla: lo barato primero
+y sin adivinar cuando no hay señal.
+
+| Peldaño | Coste | Resuelve |
+|---|---|---|
+| El **nombre** del archivo | cero, no se abre | ~36% de los casos reales |
+| El **contenido** (título, luego cuerpo) | una lectura | el resto |
+| Nada casa | — | devuelve vacío |
+
+El tercer peldaño importa tanto como los otros dos. Un archivo sin clasificar, en una
+carpeta a la vista, vale más que uno archivado a ojo donde no toca: lo primero se
+arregla mirándolo, lo segundo no se descubre hasta que alguien no encuentra sus
+papeles.
+
+Cada tipo declara su destino **en las dos plantillas**, así que el mismo documento
+sabe ir a `03_Litigation/Motions` o a `09_Motions` según el expediente:
+
+```
+python leer.py SCAN_0042.png                    ->  03_Litigation/Motions
+python leer.py SCAN_0042.png --plantilla FCRA   ->  09_Motions
+```
+
+**La tabla se comprueba a sí misma.** `clasificacion.revisar()` verifica que todos
+los destinos que declara existan de verdad en su plantilla. Un nombre mal escrito ahí
+no falla haciendo ruido: crearía una carpeta nueva en producción.
+
+## Posición contra contenido
+
+Esto es para archivos **sueltos**, los que no tienen carpeta que los explique. Si un
+documento ya está guardado en `LITIGATION`, esa carpeta lleva dentro la intención de
+quien lo archivó y vale más que cualquier lectura — se midió: reclasificar por
+contenido lo que ya se sabía por posición cambió **56 de 314** documentos, varios a
+peor (un `Motion to Compel` pasó a `Letter`).
+
+Para ese caso está `equivalencias.py`, que traduce nombre de carpeta a nombre de
+carpeta sin abrir un solo archivo.
 
 ## Por qué está hecho así
 
@@ -78,6 +121,17 @@ Ese fue el hallazgo que cerró una cacería larga: un pase que «corregía» dí
 OCR estaba tomándolos de la caja de al lado y convertía `2025` en `12025`. La
 salvaguarda que lo permitía decía *«conserva los dígitos y añade uno»*, que describe
 robar un dígito a la perfección. El módulo se borró.
+
+## Los módulos
+
+| | |
+|---|---|
+| `ocr.py` · `paddle_ocr.py` | píxeles a texto, dos motores |
+| `lectores.py` | la cascada por formato |
+| `clasificacion.py` | texto a tipo de documento, y su carpeta en cada plantilla |
+| `equivalencias.py` | nombre de carpeta a nombre de carpeta |
+| `plantillas.py` | las dos estructuras. Se sustituyen para adaptarlo a otra casa |
+| `archivar.py` | une las dos mitades |
 
 ## Qué lee
 

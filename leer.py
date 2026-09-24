@@ -19,7 +19,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from lector_ocr import extensiones_soportadas, leer_con_detalle, ocr, paddle_ocr
+from lector_ocr import (donde_archivar, extensiones_soportadas,
+                        leer_con_detalle, ocr, paddle_ocr)
 
 
 def diagnostico() -> None:
@@ -45,6 +46,8 @@ def main() -> None:
     p.add_argument("--motor", choices=ocr.MOTORES, help="Que motor usa el OCR")
     p.add_argument("--caracteres", type=int, default=1500,
                    help="Cuanto texto se imprime")
+    p.add_argument("--plantilla", choices=["Foreclosure", "FCRA"], default="Foreclosure",
+                   help="Con cual de las dos estructuras se decide la carpeta")
     p.add_argument("--diagnostico", action="store_true",
                    help="Solo dice que esta instalado")
     args = p.parse_args()
@@ -63,9 +66,15 @@ def main() -> None:
     extension = ruta.suffix.lstrip(".").lower()
     texto, motivo, con_que = leer_con_detalle(extension, ruta.read_bytes(), args.paginas)
 
+    destino = donde_archivar(ruta.name, ruta.read_bytes(), args.plantilla)
+
     print(f"\n  archivo    {ruta.name}")
     print(f"  leido con  {con_que or '(nada lo pudo leer)'}")
     print(f"  caracteres {len(texto):,}")
+    print(f"  tipo       {destino.tipo or '(no se reconocio)'}"
+          + (f"   [{destino.certeza}]" if destino.certeza else ""))
+    print(f"  va a       {destino.carpeta or '(sin clasificar)'}"
+          + (f"   <- {destino.se_decidio}" if destino.se_decidio else ""))
     if motivo:
         print(f"  aviso      {motivo}")
     print("\n" + "-" * 70)
