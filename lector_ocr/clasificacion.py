@@ -375,10 +375,27 @@ TIPOS: list[Tipo] = [
          _p(r"\binvoice\b|billing statement|fee agreement"),
          "01_General", "14_Billing and Invoices", "clear",
          en_nombre=_p(r"invoice|billing")),
+    # UN RESUMEN DEL CASO NO ES NINGUNA DE LAS PIEZAS QUE MENCIONA, y por el nombre
+    # se atrapa antes de leerlo, que es lo unico que funciona: por dentro casa con
+    # todo. Un 'Case Overview' que dice '...First Amended Complaint drafted' se
+    # clasificaba como demanda enmendada; un 'Timeline' que narra la comparecencia,
+    # como notice of appearance. Se archivaban dentro de una fase a la que no
+    # pertenecen, que es la peor forma de perder un documento.
     Tipo("Client notes or statement",
          _p(r"notes from (the )?client|client statement"),
          "01_General", "01_Documents from client", "proposed",
-         en_nombre=_p(r"notes from client|client statement")),
+         en_nombre=_p(r"notes from client|client statement|case summary|"
+                      r"case[ _-]?overview|\btimeline\b|\bchronology\b")),
+    # Seguro de la vivienda: HOI, force-placed, hazard. Faltaba en la tabla y sus
+    # documentos casaban con 'Mortgage statement' porque llevan 'Loan Number:'
+    # impreso igual que un estado hipotecario. Van a Loss Mitigation, pero NO a la
+    # subcarpeta de estados: son cosas distintas.
+    Tipo("Insurance",
+         _p(r"\bhomeowners?\b.{0,20}insurance|force[- ]?placed|hazard insurance|"
+            r"\bdeclarations? page\b|insurance policy"),
+         "02_Loss Mitigation", "01_Documents from client", "proposed",
+         en_nombre=_p(r"\bhoi\b|force[- ]?placed|\bhazard\b|prop\.? ?ins\b|"
+                      r"\binsurance\b")),
     # Un pago suelto: cheque, giro, comprobante. En foreclosure no hay carpeta de
     # facturacion, asi que va al cajon general.
     Tipo("Check or payment receipt",
