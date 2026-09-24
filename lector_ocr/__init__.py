@@ -16,10 +16,12 @@ tecleado.
 """
 
 from .archivar import Destino, donde_archivar
+from .ficha import cabecera, enmascarar, ficha_de
 from .lectores import (COMO_SE_LEE, extensiones_soportadas, leer_con_detalle,
                        lector_para, registrar)
-from . import clasificacion, equivalencias, ocr, paddle_ocr, plantillas
+from . import clasificacion, equivalencias, ficha, ocr, paddle_ocr, plantillas
 
-__all__ = ["COMO_SE_LEE", "Destino", "clasificacion", "donde_archivar",
-           "equivalencias", "extensiones_soportadas", "leer_con_detalle",
-           "lector_para", "ocr", "paddle_ocr", "plantillas", "registrar"]
+__all__ = ["COMO_SE_LEE", "Destino", "cabecera", "clasificacion",
+           "donde_archivar", "enmascarar", "equivalencias", "extensiones_soportadas",
+           "ficha", "ficha_de", "leer_con_detalle", "lector_para", "ocr",
+           "paddle_ocr", "plantillas", "registrar"]

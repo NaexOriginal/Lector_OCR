@@ -45,8 +45,11 @@ class Destino:
     carpeta: str          # '03_Litigation/Motions', o '' si no se supo
     tipo: str             # 'Notice of motion'
     certeza: str          # la que declara la tabla para ese tipo
-    se_decidio: str       # 'el nombre' | 'el contenido (titulo)' | ''
+    se_decidio: str       # 'el nombre' | 'el contenido (titulo)' | 'el contenido (mencion)'
     leido_con: str = ""   # que lector produjo el texto, vacio si no hizo falta
+    # La linea que lo decidio. Permite juzgar la propuesta sin abrir el documento,
+    # que es lo que hace revisable una lista de dos mil.
+    evidencia: str = ""
 
     def __bool__(self) -> bool:
         return bool(self.carpeta)
@@ -69,9 +72,12 @@ def donde_archivar(nombre: str, datos: bytes | None = None,
 
     extension = nombre.rsplit(".", 1)[-1].lower() if "." in nombre else ""
     texto, _, con_que = leer_con_detalle(extension, datos, paginas)
-    tipo, donde, _ = clasificacion.tipo_de_texto(texto)
+    # (tipo, EVIDENCIA, donde) -- en ese orden. Tenerlo al reves ponia en
+    # `se_decidio` la linea que hizo coincidir, que es un valor distinto por archivo
+    # y no sirve para agrupar ni para saber cuanto fiarse.
+    tipo, evidencia, donde = clasificacion.tipo_de_texto(texto)
     lector = str(con_que).split(" (")[0]
     if tipo is None or not tipo.destino(plantilla):
-        return Destino("", tipo.nombre if tipo else "", "", "", lector)
+        return Destino("", tipo.nombre if tipo else "", "", "", lector, evidencia[:160])
     return Destino(tipo.destino(plantilla), tipo.nombre, tipo.certeza,
-                   f"el contenido ({donde})", lector)
+                   f"el contenido ({donde})", lector, evidencia[:160])

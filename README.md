@@ -143,6 +143,70 @@ OCR estaba tomándolos de la caja de al lado y convertía `2025` en `12025`. La
 salvaguarda que lo permitía decía *«conserva los dígitos y añade uno»*, que describe
 robar un dígito a la perfección. El módulo se borró.
 
+## La ficha: una línea de JSONL por archivo
+
+```python
+from lector_ocr import ficha_de, cabecera
+import json
+
+registro = ficha_de("Notice of Motion.pdf", datos, "Foreclosure")
+json.dumps(registro, ensure_ascii=False)   # una línea del fichero
+```
+
+```json
+{"file_name": "SCAN_001.png", "subfolder": "(folder root)", "size_mb": 0.0,
+ "was_read": true, "read_with": "Tesseract OCR (image)", "not_read_because": null,
+ "document_type": "Notice of motion", "goes_to": "03_Litigation/Motions",
+ "decided_by": "el contenido (titulo)", "decided_because": "NOTICE OF MOTION",
+ "contains_ssn": true, "extracted_text_length": 42, "extracted_text": "..."}
+```
+
+**JSONL y no JSON**, y no es cosmético. Un expediente crece: hoy se describen tres
+archivos y mañana treinta. Con JSONL se **añaden líneas al final** sin releer ni
+reescribir lo que ya había, y se recorre a trozos — un caso de cuatro mil archivos no
+obliga a cargar veinte megas en memoria para mirar uno.
+
+La convención: la **primera línea** es un resumen y se reconoce porque lleva `matter`;
+las demás son archivos y llevan `file_name`. El resumen incluye `partial`, y eso
+importa — un fichero incompleto que no se declare incompleto se lee como completo, y
+entonces la ausencia de un documento parece una afirmación de que no existe.
+
+`decided_by` dice **cuánto fiarse**: `el nombre` y `el contenido (titulo)` son
+fiables; `el contenido (mencion)` casó con algo suelto en el cuerpo y acierta bastante
+menos. `decided_because` trae la línea exacta, que suele bastar para juzgar la
+propuesta sin abrir el documento.
+
+## Datos personales
+
+`contains_ssn` va en **cada** ficha, se enmascare o no. Con `enmascarar_ssn=True` los
+números quedan `XXX-XX-6789`, conservando los cuatro últimos dígitos, que son los que
+sirven para cotejar.
+
+El valor por defecto es **no enmascarar**, porque quién decide eso es la
+organización. Lo que no se negocia es que el número esté a la vista: una decisión
+tomada sin saber cuántos documentos llevan datos personales no es una decisión.
+
+## Para montarlo en un servidor
+
+**Un proceso, un modelo.** Ver la sección de PaddleOCR más abajo. Si hace falta más
+capacidad, varios procesos detrás de una cola — nunca varios modelos dentro del mismo
+proceso.
+
+**Hay un tope de tamaño y existe por algo.** `ficha_de` no lee nada por encima de 25
+MB (`max_mb`). Un escaneo de cuatrocientas páginas cuesta minutos y no dice más que
+uno de veinte sobre qué documento es; en un servidor, además, es lo que impide que un
+archivo enorme bloquee a los demás.
+
+**Imágenes descomprimidas enormes.** Pillow avisa por encima de ~89 megapíxeles y
+falla por encima de ~179. Con entrada de terceros eso es una vía de denegación de
+servicio, así que conviene fijar `Image.MAX_IMAGE_PIXELS` a un valor propio en vez de
+dejar el de la librería.
+
+**Nombres con blancos invisibles.** Si el servidor escribe archivos o carpetas con el
+nombre que trae el documento, recórtale los bordes incluyendo el espacio duro
+(` `): se escribe igual que un espacio normal, no se ve, y SharePoint rechaza el
+nombre con un 400 seco. Nos costó el 20% de una migración.
+
 ## Los módulos
 
 | | |
@@ -153,6 +217,7 @@ robar un dígito a la perfección. El módulo se borró.
 | `equivalencias.py` | nombre de carpeta a nombre de carpeta |
 | `plantillas.py` | las dos estructuras. Se sustituyen para adaptarlo a otra casa |
 | `archivar.py` | une las dos mitades |
+| `ficha.py` | la línea de JSONL de un archivo, y la cabecera del expediente |
 
 ## Qué lee
 
