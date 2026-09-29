@@ -34,6 +34,19 @@ import pypdf
 from . import ocr
 
 
+# Tope de paginas SOLO para el OCR. None = el mismo que el general.
+#
+# Existe porque los dos costes no se parecen: la capa de texto es gratis por pagina
+# y el OCR no. Quien lo fija es quien lanza la tanda, con topar_ocr().
+PAGINAS_OCR: int | None = None
+
+
+def topar_ocr(paginas: int | None) -> None:
+    """Cuantas paginas se rasterizan como mucho. None vuelve al tope general."""
+    global PAGINAS_OCR
+    PAGINAS_OCR = paginas
+
+
 class Lector(ABC):
     """Convierte el contenido de un archivo en texto plano."""
 
@@ -113,7 +126,18 @@ class LectorPDF(Lector):
                         + (f" via {usados}" if usados else ""))
             return "", f"PDF portfolio with {len(adjuntos)} attachments, none readable", ""
 
-        texto_ocr, motivo, con_que = ocr.texto_de_pdf(datos, paginas)
+        # EL TOPE DEL OCR ES OTRO, y esa es la diferencia entre horas y semanas.
+        #
+        # Leer 400 paginas de capa de texto son milisegundos; reconocerlas son 400
+        # pasadas de OCR, y el OCR esta SERIALIZADO a proposito (ver el candado de
+        # inferencia en paddle_ocr: Paddle no garantiza que un predictor se pueda
+        # usar desde varios hilos). Con ocho hilos, uno hace OCR y siete esperan.
+        #
+        # Medido el 28-sep: con tope unico y sin limite, 60 archivos no acabaron en
+        # trece minutos. Solo el 21,7% necesita OCR, asi que separar los dos topes
+        # deja completo el 78,3% que se lee de la capa de texto y acota lo caro.
+        tope = PAGINAS_OCR if PAGINAS_OCR is not None else paginas
+        texto_ocr, motivo, con_que = ocr.texto_de_pdf(datos, tope)
         if texto_ocr.strip():
             # El nombre del motor lo dice ocr.py, no se escribe aqui: con dos
             # motores disponibles, escribirlo a mano seria mentir la mitad de las
@@ -244,7 +268,10 @@ class LectorDOCX(Lector):
 
         texto = ""
         if documento is not None:
-            tope = max(paginas, 1) * self.PARRAFOS_POR_PAGINA
+            # 0 = TODO el documento. Con max(paginas, 1) la lectura completa se
+            # quedaba en 14 parrafos: el Word entero pasaba por leido con su caratula.
+            tope = (float("inf") if paginas <= 0
+                    else max(paginas, 1) * self.PARRAFOS_POR_PAGINA)
             texto = "\n".join(self._en_orden(documento, tope))
         if texto.strip() and not ocr.necesita_ocr(texto, max(paginas, 1))[0]:
             return texto, "", "python-docx"
@@ -255,7 +282,7 @@ class LectorDOCX(Lector):
         # encabezado y nada mas. Un .docx es un zip con XML dentro, asi que se abre
         # a mano y se saca el texto de todas partes.
         con_que = "python-docx"
-        del_xml = self._del_xml(datos)
+        del_xml = self._del_xml(datos, todas=paginas <= 0)
         if del_xml.strip() and len(del_xml) > len(texto):
             texto, con_que = del_xml, "python-docx (raw XML: text boxes included)"
         if texto.strip() and not ocr.necesita_ocr(texto, max(paginas, 1))[0]:
@@ -301,7 +328,8 @@ class LectorDOCX(Lector):
                     return "", 0, ""
                 partes = []
                 motores = []
-                for nombre in medios[:IMAGENES_MAXIMAS]:
+                # En la lectura completa (paginas 0) se leen TODAS las imagenes.
+                for nombre in (medios if paginas <= 0 else medios[:IMAGENES_MAXIMAS]):
                     # Sin minimo a proposito: la clave de una produccion
                     # documental vive en una imagen dentro de un Word y son once
                     # caracteres. El filtro de ruido esta para las fotos sueltas.
@@ -317,15 +345,17 @@ class LectorDOCX(Lector):
                 " + ".join(sorted(set(motores))) or "OCR")
 
     @staticmethod
-    def _del_xml(datos: bytes) -> str:
-        """El texto de las partes XML del .docx, cuadros de texto incluidos."""
+    def _del_xml(datos: bytes, todas: bool = False) -> str:
+        """El texto de las partes XML del .docx, cuadros de texto incluidos.
+
+        `todas`: sin el tope de 20 partes (lectura completa)."""
         try:
             with zipfile.ZipFile(io.BytesIO(datos)) as paquete:
                 piezas = [n for n in paquete.namelist()
                           if n.startswith("word/") and n.endswith(".xml")
                           and "rels" not in n and "theme" not in n]
                 crudo = "\n".join(paquete.read(n).decode("utf-8", "ignore")
-                                  for n in piezas[:20])
+                                  for n in (piezas if todas else piezas[:20]))
         except Exception:  # noqa: BLE001 - si no es un zip valido, no hay nada que sacar
             return ""
 
@@ -359,7 +389,9 @@ class LectorMSG(Lector):
                 mensaje.to or "",
                 mensaje.cc or "",
             ]
-            cuerpo = (mensaje.body or "")[: max(paginas, 1) * 3000]
+            cuerpo = mensaje.body or ""
+            if paginas > 0:          # 0 = el correo entero
+                cuerpo = cuerpo[: paginas * 3000]
         except Exception as error:
             return "", f"could not read the email ({type(error).__name__})"
         finally:
@@ -399,9 +431,12 @@ class LectorXLSX(Lector):
 
         partes = []
         try:
-            for hoja in libro.worksheets[:3]:
+            # 0 = todas las hojas y todas las filas.
+            completo = paginas <= 0
+            for hoja in (libro.worksheets if completo else libro.worksheets[:3]):
                 partes.append(str(hoja.title))
-                for fila in hoja.iter_rows(max_row=self.FILAS, values_only=True):
+                for fila in hoja.iter_rows(max_row=None if completo else self.FILAS,
+                                           values_only=True):
                     celdas = [str(c) for c in fila if c not in (None, "")]
                     if celdas:
                         partes.append(" ".join(celdas))
@@ -569,15 +604,22 @@ class LectorZIP(Lector):
                                "read_with": con_que or None,
                                "not_read_because": motivo or None})
 
+            # LECTURA COMPLETA (paginas 0): sin tope de entradas ni de tamano, y se
+            # abren zips dentro de zips hasta cinco niveles. Cada entrada se suelta
+            # de memoria al leerla, asi que el total descomprimido no pesa en RAM.
+            completo = paginas <= 0
+            max_entradas = len(entradas) if completo else ENTRADAS_MAXIMAS
+            niveles = 5 if completo else 1
             partes, leidos, saltados, gastado = [], [], 0, 0
-            for entrada in entradas[:ENTRADAS_MAXIMAS]:
+            for entrada in entradas[:max_entradas]:
                 extension = (entrada.filename.rsplit(".", 1)[-1].lower()
                              if "." in entrada.filename else "")
-                if extension == "zip" and anidado:
+                if extension == "zip" and int(anidado) >= niveles:
                     saltados += 1
-                    anotar(entrada, False, "nested zip: only one level is opened")
+                    anotar(entrada, False,
+                           f"nested zip: only {niveles} level(s) are opened")
                     continue
-                if gastado + entrada.file_size > DESCOMPRIMIDO_MAXIMO:
+                if not completo and gastado + entrada.file_size > DESCOMPRIMIDO_MAXIMO:
                     saltados += 1
                     anotar(entrada, False, "over the uncompressed size cap")
                     continue
@@ -590,8 +632,8 @@ class LectorZIP(Lector):
                 gastado += len(contenido)
 
                 if extension == "zip":
-                    suyo, motivo, con_que = self.leer_detalle(contenido, paginas,
-                                                              anidado=True)
+                    suyo, motivo, con_que = self.leer_detalle(
+                        contenido, paginas, anidado=int(anidado) + 1)
                 else:
                     suyo, motivo, con_que = leer_con_detalle(extension, contenido, paginas)
                 if suyo.strip():
@@ -602,8 +644,8 @@ class LectorZIP(Lector):
                     saltados += 1
                     anotar(entrada, False, motivo or "no text")
 
-            if len(entradas) > ENTRADAS_MAXIMAS:
-                for entrada in entradas[ENTRADAS_MAXIMAS:]:
+            if len(entradas) > max_entradas:
+                for entrada in entradas[max_entradas:]:
                     saltados += 1
                     anotar(entrada, False, f"over the cap of {ENTRADAS_MAXIMAS} entries")
 
@@ -662,6 +704,49 @@ for _lector in (LectorPDF(), LectorDOCX(), LectorMSG(), LectorXLSX(), LectorImag
                 LectorTexto(), LectorHTML(), LectorZIP()):
     registrar(_lector)
 
+# Los formatos viejos de Office (.doc, .xls) viven en su propio modulo: al pasarlos
+# a produccion basta con copiar legado.py y estas tres lineas.
+from .legado import LectorDOC, LectorXLS  # noqa: E402
+
+for _lector in (LectorDOC(), LectorXLS()):
+    registrar(_lector)
+
+# Los poco comunes con arreglo facil (rtf, xml, eml, mht, xlsm/xlsb, dotx, odt,
+# pptx). Van despues porque LectorMHT sustituye a LectorHTML en .mhtml.
+from .otros_formatos import (LectorEML, LectorHojaCalamine, LectorMHT,  # noqa: E402
+                             LectorODT, LectorPPTX, LectorRTF, LectorVarianteWord,
+                             LectorXML)
+
+for _lector in (LectorRTF(), LectorXML(), LectorEML(), LectorMHT(), LectorHojaCalamine(),
+                LectorVarianteWord(), LectorODT(), LectorPPTX()):
+    registrar(_lector)
+
+# heic/jfif, 7z, winmail.dat, y el olfateo de los disfrazados (ver disfrazados.py).
+from .disfrazados import (NO_ES_DOCUMENTO_WEB, SIN_SIGNIFICADO,  # noqa: E402
+                          Lector7Z, LectorImagenExtra, LectorTNEF, olfatear,
+                          parece_codigo)
+
+for _lector in (LectorImagenExtra(), Lector7Z(), LectorTNEF()):
+    registrar(_lector)
+
+# FAMILIAS: extensiones que son el mismo tipo de contenido y que el olfateo no sabe
+# (ni necesita) distinguir. Un .xlsm huele a .xlsx y un .dotx a .docx; cambiarlos
+# de lector seria peor, no mejor. Y reintentar una imagen con OTRO lector de imagen
+# seria otra pasada de OCR para nada.
+_FAMILIAS = [
+    {"png", "jpg", "jpeg", "gif", "tif", "tiff", "bmp", "webp", "jfif", "jpe", "heic", "heif"},
+    {"docx", "docm", "dotx", "dotm"},
+    {"xlsx", "xlsm", "xlsb", "xltx", "ods"},
+    {"pptx", "pptm", "ppsx"},
+    {"doc", "dot"}, {"xls", "xlt"}, {"odt", "ott"},
+    {"html", "htm", "mht", "mhtml", "eml"},
+    {"txt", "csv", "log", "md"},
+]
+
+
+def _misma_familia(a: str, b: str) -> bool:
+    return a == b or any(a in f and b in f for f in _FAMILIAS)
+
 
 def lector_para(extension: str) -> Lector | None:
     return REGISTRO.get(extension.lower())
@@ -681,9 +766,72 @@ COMO_SE_LEE = {
 }
 
 
+# LOS '._' DEL MAC. Cuando un Mac copia un archivo a una unidad o a SharePoint,
+# deja al lado otro con el mismo nombre precedido de '._' (AppleDouble): guarda el
+# icono y los atributos, y NINGUN texto. Pesan 4.096 bytes y en Matters hay 242
+# (29-sep), con extension .doc, .pdf, .jpg... la del archivo al que acompanan.
+# Leerlos como documento daba 'not a Word 97-2003 file' y, como ese motivo no es
+# permanente, se reintentaban en cada tanda para fallar otra vez.
+#
+# Se reconocen por la FIRMA del contenido (00 05 16 07 = AppleDouble, 00 05 16 00 =
+# AppleSingle), no por el nombre: un documento de verdad cuyo nombre empiece por
+# '._' se lee como cualquier otro.
+#
+# El motivo es PERMANENTE a proposito: el texto lo trae su documento hermano (el
+# mismo nombre sin '._'), que se lee aparte. Quien cuente motivos permanentes
+# (describir_casos.PERMANENTES) tiene que incluir la frase 'not a document'.
+FIRMAS_MAC = (b"\x00\x05\x16\x07", b"\x00\x05\x16\x00")
+NO_ES_DOCUMENTO_MAC = "macOS metadata file (AppleDouble), not a document"
+
+
+def es_metadato_de_mac(datos: bytes) -> bool:
+    return datos[:4] in FIRMAS_MAC
+
+
 def leer_con_detalle(extension: str, datos: bytes, paginas: int,
-                     extras: dict | None = None) -> tuple[str, str, str]:
-    """(texto, motivo_de_fallo, con_que_se_leyo). Un solo sitio que lo sepa.
+                     extras: dict | None = None,
+                     _olfateado: bool = False) -> tuple[str, str, str]:
+    """(texto, motivo_de_fallo, con_que_se_leyo), mirando el CONTENIDO si hace falta.
+
+    Si la extension no tiene lector o no significa nada (.download, .dat, sin
+    extension, '2019'), o si su lector fallo y el contenido es de otro tipo, se lee
+    con el lector que corresponde a lo que el archivo ES (ver disfrazados.py). El
+    'con que' lo dice: 'pypdf (text layer) (content is .pdf, named .download)'.
+    """
+    if es_metadato_de_mac(datos):
+        return "", NO_ES_DOCUMENTO_MAC, ""
+    ext = (extension or "").lower()
+    nombre = f".{ext}" if ext else "no extension"
+    lector = lector_para(ext)
+
+    # EL CONTENIDO MANDA cuando es de otra familia: un Word llamado .pdf se lee con
+    # el lector de Word, aunque el de PDF tambien consiguiera sacarle algo.
+    real = None if _olfateado else olfatear(ext, datos)
+    # 'Es un ZIP' no dice nada si la extension ya tiene lector: Word, Excel,
+    # PowerPoint y OpenDocument son ZIP por dentro. Solo manda sin lector.
+    if real == "zip" and lector is not None and ext not in SIN_SIGNIFICADO:
+        real = None
+    # Texto que llega por el olfateo y es CODIGO de una pagina web (los
+    # '.js.download' de 'Guardar pagina como'): no es un documento. Ver
+    # disfrazados.NO_ES_DOCUMENTO_WEB.
+    if real in ("txt", "html") and parece_codigo(datos):
+        return "", NO_ES_DOCUMENTO_WEB, ""
+    if real and lector_para(real) and not _misma_familia(real, ext):
+        t, m, c = leer_con_detalle(real, datos, paginas, extras, _olfateado=True)
+        if t.strip():
+            return t, "", f"{c} (content is .{real}, named {nombre})"
+        if lector is None or ext in SIN_SIGNIFICADO:
+            return "", f"{m} (content is .{real}, named {nombre})", ""
+        # Si no salio, se prueba aun con el lector de su extension.
+
+    if lector is None:
+        return "", f"no reader for .{ext or '(no extension)'}", ""
+    return _con_su_lector(lector, ext, datos, paginas, extras)
+
+
+def _con_su_lector(lector: Lector, extension: str, datos: bytes, paginas: int,
+                   extras: dict | None) -> tuple[str, str, str]:
+    """(texto, motivo_de_fallo, con_que_se_leyo) con el lector de ESA extension.
 
     Existe para que quien quiera ese detalle no tenga que repetir por su cuenta la
     cascada del PDF: dos copias de esa logica acabarian discrepando, y entonces el
@@ -693,10 +841,10 @@ def leer_con_detalle(extension: str, datos: bytes, paginas: int,
     cabe en una frase. Hoy lo usa el zip para decir QUE trae dentro y que se leyo de
     cada cosa, porque sin eso un contenedor de 49 MB del que solo se saco un PDF se
     cuenta entero como leido -- que es justo el error que este informe perseguia.
+
+    Los '._' del Mac se descartan ANTES, en leer_con_detalle, para cualquier
+    extension (ver NO_ES_DOCUMENTO_MAC).
     """
-    lector = lector_para(extension)
-    if lector is None:
-        return "", f"no reader for .{extension or '(no extension)'}", ""
     if hasattr(lector, "leer_detalle"):
         if "extras" in lector.leer_detalle.__code__.co_varnames:
             return lector.leer_detalle(datos, paginas, extras=extras)
