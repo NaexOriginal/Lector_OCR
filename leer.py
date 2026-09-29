@@ -10,7 +10,7 @@ el texto es el que escribio el autor) o Tesseract (probable, y hay que subir DPI
 
 Uso:
     python leer.py documento.pdf
-    python leer.py escaneo.pdf --motor paddle --paginas 4
+    python leer.py escaneo.pdf --motor tesseract --paginas 4
     python leer.py --diagnostico
 """
 
@@ -27,7 +27,8 @@ def diagnostico() -> None:
     """Que motores hay instalados y sobre que se van a ejecutar."""
     print("MOTORES\n")
     hay, detalle = ocr.disponible()
-    print(f"  Tesseract   {'si' if hay else 'NO'}   {detalle}")
+    # Tesseract ya es opcional: solo hace falta si se elige a mano.
+    print(f"  Tesseract   {'si' if hay else 'no (opcional)'}   {detalle}")
     hay_p, detalle_p = paddle_ocr.disponible()
     print(f"  PaddleOCR   {'si' if hay_p else 'NO'}   {detalle_p}")
     if hay_p:
@@ -41,8 +42,8 @@ def diagnostico() -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("archivo", nargs="?", help="El archivo a leer")
-    p.add_argument("--paginas", type=int, default=2,
-                   help="Paginas del PDF que se leen (0 = todas)")
+    p.add_argument("--paginas", type=int, default=0,
+                   help="Paginas del PDF que se leen (0 = todas, por defecto)")
     p.add_argument("--motor", choices=ocr.MOTORES, help="Que motor usa el OCR")
     p.add_argument("--caracteres", type=int, default=1500,
                    help="Cuanto texto se imprime")
@@ -66,7 +67,9 @@ def main() -> None:
     extension = ruta.suffix.lstrip(".").lower()
     texto, motivo, con_que = leer_con_detalle(extension, ruta.read_bytes(), args.paginas)
 
-    destino = donde_archivar(ruta.name, ruta.read_bytes(), args.plantilla)
+    # Con el texto ya leido: sin esto, un escaneo pasaba dos veces por el OCR.
+    destino = donde_archivar(ruta.name, ruta.read_bytes(), args.plantilla,
+                             texto=texto, con_que=con_que)
 
     print(f"\n  archivo    {ruta.name}")
     print(f"  leido con  {con_que or '(nada lo pudo leer)'}")

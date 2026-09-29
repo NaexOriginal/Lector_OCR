@@ -31,10 +31,15 @@ from .lectores import leer_con_detalle
 # Un numero de la Seguridad Social de EE.UU. tal y como se escribe en un documento.
 SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 
-# Por encima de esto no se lee. Un escaneo de cuatrocientas paginas cuesta minutos y
-# no dice mas que uno de veinte sobre que documento es. En un servidor esto ademas
-# es el limite que impide que un archivo enorme bloquee al resto.
-MAX_MB = 25
+# LECTURA COMPLETA POR DEFECTO: todas las paginas y sin tope de tamano (0 = sin
+# tope). La ficha es el texto del documento, no una muestra: con cuatro paginas y
+# 25 MB, los escaneos largos -- justo los que solo tienen texto si se les hace OCR --
+# quedaban a medias sin que la ficha lo dijera.
+#
+# Quien necesite un tope (un servidor que no quiera que un archivo enorme bloquee
+# al resto) lo pasa: ficha_de(..., paginas=4, max_mb=25).
+PAGINAS_POR_DEFECTO = 0
+MAX_MB = 0
 
 
 def enmascarar(texto: str) -> str:
@@ -43,7 +48,7 @@ def enmascarar(texto: str) -> str:
 
 
 def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
-             subcarpeta: str = "", paginas: int = PAGINAS,
+             subcarpeta: str = "", paginas: int = PAGINAS_POR_DEFECTO,
              con_texto: bool = True, enmascarar_ssn: bool = False,
              max_mb: float = MAX_MB) -> dict:
     """Todo lo que se sabe de un archivo, listo para volcar como una linea de JSONL.
@@ -61,7 +66,7 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
         "subfolder": subcarpeta or "(folder root)",
         "size_mb": round(tamano, 2),
     }
-    if tamano > max_mb:
+    if max_mb and tamano > max_mb:
         return {**base, "was_read": False, "read_with": None,
                 "not_read_because": f"larger than {max_mb} MB"}
 
@@ -72,7 +77,10 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
         return {**base, "was_read": False, "read_with": None,
                 "not_read_because": f"{type(error).__name__}: {error}"[:120]}
 
-    destino = donde_archivar(nombre, datos, plantilla, paginas)
+    # Se clasifica con el texto que ya se leyo (su principio): leerlo otra vez
+    # seria un segundo OCR del mismo escaneo.
+    destino = donde_archivar(nombre, datos, plantilla, PAGINAS,
+                             texto=texto, con_que=con_que)
     lleva_ssn = bool(SSN.search(texto))
     ficha = {
         **base,
