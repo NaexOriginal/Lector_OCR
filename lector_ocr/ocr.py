@@ -36,6 +36,30 @@ import io
 import os
 import re
 import shutil
+import threading
+
+# EL ULTIMO ERROR DEL MOTOR, POR HILO. paddle_ocr.leer devuelve el error en su
+# detalle, pero leer_imagen solo pasaba el texto hacia arriba, y un PDF en el que
+# Paddle reventaba en cada pagina acababa como 'OCR got no text: unreadable'. Asi se
+# escondio el fallo de oneDNN en CPU (ver paddle_ocr._construir): miles de paginas
+# 'sin texto' que en realidad eran un error. Es por hilo porque se puede leer con
+# varios a la vez, y el error de uno no puede ser el motivo del archivo de otro.
+_errores = threading.local()
+
+
+def _anotar_error(detalle: dict) -> None:
+    if detalle.get("error"):
+        _errores.ultimo = detalle["error"]
+
+
+def _sin_texto(motivo_por_defecto: str) -> str:
+    """El motivo de 'no salio texto': el error del motor si lo hubo."""
+    return getattr(_errores, "ultimo", None) or motivo_por_defecto
+
+
+def _empezar() -> None:
+    """Olvida el error del archivo anterior de este mismo hilo."""
+    _errores.ultimo = None
 
 # 300 puntos por pulgada. Estaba en 200 y subirlo es el cambio mas rentable que se
 # ha medido en todo el OCR: sobre los seis documentos del lote de control donde conocemos la
@@ -313,7 +337,12 @@ def _enderezar(imagen):
     podey s,wno1,' -- el texto leido de lado, letra por letra. La deteccion de
     orientacion es una llamada aparte y falla cuando hay poco texto en la pagina,
     asi que su fallo no puede tumbar la lectura: si no sabe, se deja como estaba.
+
+    CON PADDLE NO SE LLAMA A TESSERACT: la orientacion la corrige el propio Paddle
+    (use_doc_orientation_classify en paddle_ocr._construir).
     """
+    if MOTOR == "paddle":
+        return imagen
     try:
         import pytesseract
 
@@ -366,11 +395,15 @@ POR_DEFECTO = UN_SOLO_BLOQUE
 #   'auto'       Tesseract, y PaddleOCR SOLO donde Tesseract no saco nada legible
 #
 # 'auto' no puede salir peor que 'tesseract': solo entra a rescatar donde ya se
-# habia fallado. Por eso es el que conviene por defecto, y por eso Paddle apenas se
-# paga -- sus modelos tardan entre cinco y quince segundos en cargar, pero eso solo
-# ocurre si algun archivo lo necesita.
+# habia fallado.
 MOTORES = ("tesseract", "paddle", "auto")
-MOTOR = "auto"
+# PADDLE POR DEFECTO. Con 'auto', un equipo sin Tesseract instalado -- Tesseract es
+# un programa aparte, no una libreria de pip -- dejaba cada escaneo y cada imagen
+# como 'Tesseract is missing': en una tanda real, mas de la mitad de los archivos
+# sin leer, y la tanda 'terminaba' en una hora. Paddle se instala con pip, corre
+# en GPU y en CPU, y lee mejor. Tesseract solo se usa si alguien lo pide a mano con
+# elegir('tesseract') o elegir('auto').
+MOTOR = "paddle"
 
 # Cuando se considera que Tesseract no saco nada y hay que llamar al rescate. El
 # umbral de parece_ruido() no basta aqui: exige 60 caracteres para opinar, y la
@@ -414,6 +447,7 @@ def leer_imagen(imagen, enderezar: bool = True, agrandar: bool = False,
 
     if MOTOR == "paddle":
         texto, detalle = paddle_ocr.leer(imagen)
+        _anotar_error(detalle)
         return texto, _marca_paddle(detalle)
 
     texto = _de_imagen(imagen, enderezar=False, agrandar=False, psm=psm)
@@ -567,6 +601,7 @@ def texto_de_imagen(datos: bytes, minimo: int = MINIMO_ACEPTABLE) -> tuple[str, 
     produccion documental viene como imagen dentro de un Word y son once caracteres
     ('%98Bf3@d2xQ'). Un minimo ciego la mataria y dejaria 147 MB sin abrir.
     """
+    _empezar()
     puede, motivo = _motor_disponible()
     if not puede:
         return "", motivo, ""
@@ -600,7 +635,7 @@ def texto_de_imagen(datos: bytes, minimo: int = MINIMO_ACEPTABLE) -> tuple[str, 
     except Exception as error:  # noqa: BLE001
         return "", f"OCR could not read the image ({type(error).__name__})", ""
     if not texto.strip():
-        return "", "OCR found no text in the image", ""
+        return "", _sin_texto("OCR found no text in the image"), ""
     if len(texto.strip()) < minimo:
         return "", (f"OCR returned only {len(texto.strip())} characters: "
                     "too little to be text"), ""
@@ -616,6 +651,7 @@ def texto_de_pdf(datos: bytes, paginas: int) -> tuple[str, str, str]:
     instalado Poppler por fuera, que en Windows es otra descarga suelta que alguien
     tiene que recordar. PyMuPDF es una sola rueda de pip y no depende de nada mas.
     """
+    _empezar()
     puede, motivo = _motor_disponible()
     if not puede:
         return "", motivo, ""
@@ -641,13 +677,14 @@ def texto_de_pdf(datos: bytes, paginas: int) -> tuple[str, str, str]:
 
     texto = "\n".join(partes)
     if not texto.strip():
-        return "", "OCR got no text: unreadable", ""
+        return "", _sin_texto("OCR got no text: unreadable"), ""
     if parece_ruido(texto):
         return "", "OCR returned noise, not words: the pages have no readable text", ""
     # En 'auto' unas paginas las puede leer uno y otras el otro, y eso hay que
     # decirlo: no es lo mismo un documento leido entero por Tesseract que uno donde
     # la mitad la rescato Paddle.
-    return texto, "", " + ".join(sorted(set(motores))) or "Tesseract OCR"
+    return texto, "", (" + ".join(sorted(set(motores)))
+                       or ("PaddleOCR" if MOTOR == "paddle" else "Tesseract OCR"))
 
 
 def adjuntos_de_portfolio(datos: bytes) -> list[tuple[str, bytes]]:
@@ -686,6 +723,9 @@ def texto_sin_ocr(datos: bytes, paginas: int) -> str:
         return ""
     try:
         with pymupdf.open(stream=datos, filetype="pdf") as documento:
-            return "\n".join(p.get_text() for p in documento[: max(paginas, 1)])
+            # 0 = todas. Con max(paginas, 1) la lectura completa leia UNA pagina aqui
+            # y el PDF acababa en el OCR (o con una pagina de texto) sin motivo.
+            hojas = documento if paginas <= 0 else documento[: max(paginas, 1)]
+            return "\n".join(p.get_text() for p in hojas)
     except Exception:  # noqa: BLE001 - si no abre, ya lo dira el OCR
         return ""

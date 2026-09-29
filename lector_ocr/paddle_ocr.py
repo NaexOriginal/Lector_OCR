@@ -168,16 +168,25 @@ def _motor():
 def _construir():
     from paddleocr import PaddleOCR
 
-    # Los tres clasificadores auxiliares se apagan a proposito: enderezar la pagina
-    # y corregir el alabeo ya los hace nuestro pipeline antes de llegar aqui, y cada
-    # uno es otro modelo que cargar.
+    # ENDEREZAR LA PAGINA LO HACE PADDLE. Antes lo hacia Tesseract (OSD) en
+    # ocr._enderezar, pero con Paddle como motor por defecto Tesseract ya no se llama,
+    # y sin esto una pagina escaneada de lado se leeria letra por letra al reves.
+    # El alabeo y la orientacion por linea siguen apagados: otro modelo cada uno.
     donde, _ = dispositivo()
+    # EN CPU, SIN oneDNN (MKLDNN). Con paddlepaddle 3.3.1 la aceleracion oneDNN de
+    # CPU revienta en CADA prediccion: 'NotImplementedError: ConvertPirAttribute2
+    # RuntimeAttribute not support [pir::ArrayAttribute<pir::DoubleAttribute>]'.
+    # Comprobado en un equipo sin NVIDIA: con oneDNN, error; sin el, el texto de
+    # prueba exacto. En una tanda real dejo sin leer todas las paginas escaneadas
+    # de los equipos sin GPU. En GPU no aplica: ahi no se usa oneDNN.
+    extra = {"enable_mkldnn": False} if donde == "cpu" else {}
     try:
         return PaddleOCR(lang=IDIOMA,
                          device=donde,
-                         use_doc_orientation_classify=False,
+                         use_doc_orientation_classify=True,
                          use_doc_unwarping=False,
-                         use_textline_orientation=False)
+                         use_textline_orientation=False,
+                         **extra)
     except TypeError:
         # PaddleOCR 2.x no conoce esos parametros.
         return PaddleOCR(lang=IDIOMA, use_angle_cls=False, show_log=False)
