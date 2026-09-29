@@ -36,6 +36,30 @@ import io
 import os
 import re
 import shutil
+import threading
+
+# EL ULTIMO ERROR DEL MOTOR, POR HILO. paddle_ocr.leer devuelve el error en su
+# detalle, pero leer_imagen solo pasaba el texto hacia arriba, y un PDF en el que
+# Paddle reventaba en cada pagina acababa como 'OCR got no text: unreadable'. Asi se
+# escondio el fallo de oneDNN en CPU (ver paddle_ocr._construir): miles de paginas
+# 'sin texto' que en realidad eran un error. Es por hilo porque se puede leer con
+# varios a la vez, y el error de uno no puede ser el motivo del archivo de otro.
+_errores = threading.local()
+
+
+def _anotar_error(detalle: dict) -> None:
+    if detalle.get("error"):
+        _errores.ultimo = detalle["error"]
+
+
+def _sin_texto(motivo_por_defecto: str) -> str:
+    """El motivo de 'no salio texto': el error del motor si lo hubo."""
+    return getattr(_errores, "ultimo", None) or motivo_por_defecto
+
+
+def _empezar() -> None:
+    """Olvida el error del archivo anterior de este mismo hilo."""
+    _errores.ultimo = None
 
 # 300 puntos por pulgada. Estaba en 200 y subirlo es el cambio mas rentable que se
 # ha medido en todo el OCR: sobre los seis documentos del lote de control donde conocemos la
@@ -140,7 +164,64 @@ PORTFOLIO = re.compile(r"open this PDF portfolio", re.I)
 
 # Un escaneo cuyo unico texto real es el sello Bates: 'PLAINTIFF001 PLAINTIFF002'
 # en 23 MB de imagenes. Por debajo de esto no hay documento, hay sellos.
+#
+# EL UMBRAL SE MIDE SOBRE EL TEXTO SIN SELLOS, no sobre lo que devuelve pypdf. Ver
+# SELLOS aqui debajo: el del juzgado solo ya pasa de 100 caracteres por pagina, y
+# con el dentro este umbral no separaba nada.
 CARACTERES_POR_PAGINA = 100
+
+# EL SELLO DEL JUZGADO NO ES EL DOCUMENTO, y contarlo como si lo fuera es lo que
+# hacia que a los escaneos de NYSCEF no se les pasara nunca el OCR.
+#
+# NYSCEF superpone su sello como capa de texto sobre CADA pagina, tambien sobre las
+# que son una imagen escaneada. Un escrito de 14 paginas sin una sola letra propia
+# devuelve asi:
+#
+#     FILED: NEW YORK COUNTY CLERK 09/24/2026 10:58 AM   INDEX NO. 850209/2016
+#     NYSCEF DOC. NO. 279                       RECEIVED NYSCEF: 09/24/2026
+#     1 of 14
+#
+# Son 158 caracteres por pagina. El umbral estaba en 100, asi que necesita_ocr()
+# contestaba "ya esta leido" y devolvia el membrete. El documento acababa
+# clasificado sobre el nombre del juzgado -- en 00_Unfiled, sin error y sin aviso.
+#
+# Medido: con el sello dentro, necesita_ocr() da False a 1, 2, 3, 5, 10, 14 y 20
+# paginas. A cualquier numero. No habia ningun escaneo de NYSCEF que llegase al OCR.
+#
+# Se descuenta antes de medir en vez de subir el umbral porque 100 esta medido
+# contra documentos de verdad y sigue siendo el numero correcto: lo que estaba mal
+# era contar el membrete del juzgado como contenido. Subirlo a 200 mandaria al OCR
+# las paginas legitimamente escuetas -- separadores de anexo, hojas de firma.
+#
+# El sello NO se quita del texto que se devuelve: lleva el INDEX NO., que es lo que
+# empareja el documento con su expediente. Solo se descuenta para DECIDIR.
+SELLOS = (
+    # NYSCEF, primera linea: 'FILED: KINGS COUNTY CLERK 09/24/2026 10:58 AM'
+    re.compile(r"^\s*FILED:\s*[A-Z][A-Z .'-]*?COUNTY CLERK\b.*$", re.I | re.M),
+    # NYSCEF en apelacion: 'FILED: APPELLATE DIVISION - 2ND DEPT 09/24/2026'
+    re.compile(r"^\s*FILED:\s*APPELLATE DIVISION\b.*$", re.I | re.M),
+    # Las otras tres lineas del sello, que a veces vienen sueltas o reordenadas.
+    re.compile(r"^\s*NYSCEF DOC\.?\s*NO\.?\s*\d+.*$", re.I | re.M),
+    re.compile(r"^\s*RECEIVED NYSCEF:.*$", re.I | re.M),
+    re.compile(r"^\s*INDEX NO\.?\s*[\w/.-]+\s*$", re.I | re.M),
+    # Sello ECF federal: 'Case 1:18-cv-04039-ENV-RML Document 23 Filed 12/21/18
+    # Page 1 of 14 PageID #: 123'. Mismo problema, otro juzgado.
+    re.compile(r"^\s*Case\s+\d+:\d+-[a-z]{2}-\d+.*?Filed\s+\d{2}/\d{2}/\d{2,4}.*$",
+               re.I | re.M),
+    # El contador de paginas que acompana a los dos.
+    re.compile(r"^\s*(?:Page\s+)?\d+\s+of\s+\d+\s*$", re.I | re.M),
+)
+
+
+def sin_sellos(texto: str) -> str:
+    """El texto sin los membretes de e-filing. Para MEDIR, no para devolver.
+
+    Lo que queda es lo que el documento aporta por si mismo. Si se queda en nada,
+    es que la pagina es una imagen y lo unico escrito encima era el sello.
+    """
+    for patron in SELLOS:
+        texto = patron.sub("", texto)
+    return texto
 
 # Fuentes embebidas sin tabla ToUnicode: pypdf saca el indice del glifo en vez de
 # la letra, y sale '/0/1/2/3/1/4/3/2/5/6/i255'.
@@ -195,15 +276,21 @@ def necesita_ocr(texto: str, paginas_leidas: int) -> tuple[bool, str]:
         return True, "the text layer came back empty"
     if PORTFOLIO.search(texto):
         return True, "it is a PDF portfolio: the content is in the attachments"
-    if len(texto) / max(paginas_leidas, 1) < CARACTERES_POR_PAGINA:
-        return True, (f"only {len(texto)} characters in {paginas_leidas} page(s): "
-                      "the page is an image and the text is just a stamp")
+    # SOBRE EL TEXTO SIN SELLOS. Con el sello dentro, un escaneo de NYSCEF pasaba
+    # este filtro siempre: ver SELLOS.
+    propio = sin_sellos(texto)
+    if len(propio) / max(paginas_leidas, 1) < CARACTERES_POR_PAGINA:
+        sello = len(texto) - len(propio)
+        return True, (
+            f"only {len(propio)} characters of its own in {paginas_leidas} page(s)"
+            + (f" ({sello} more were the e-filing stamp)" if sello else "")
+            + ": the page is an image and the text is just a stamp")
     # Las dos condiciones, no una. Un P&L o un reporte de credito son tablas de
     # cifras y bajan de la proporcion de letras siendo texto impecable; lo que no
     # tienen NUNCA es cero palabras. Los indices de glifo no tienen ni lo uno ni lo
     # otro, asi que exigir ambas deja fuera la basura sin llevarse las tablas.
-    if (_proporcion_de_letras(texto) < PROPORCION_DE_LETRAS
-            and proporcion_de_palabras(texto) < PALABRAS_LARGAS):
+    if (_proporcion_de_letras(propio) < PROPORCION_DE_LETRAS
+            and proporcion_de_palabras(propio) < PALABRAS_LARGAS):
         return True, ("embedded fonts with no character map: the text layer gives "
                       "glyph indexes, not letters")
     return False, ""
@@ -250,7 +337,12 @@ def _enderezar(imagen):
     podey s,wno1,' -- el texto leido de lado, letra por letra. La deteccion de
     orientacion es una llamada aparte y falla cuando hay poco texto en la pagina,
     asi que su fallo no puede tumbar la lectura: si no sabe, se deja como estaba.
+
+    CON PADDLE NO SE LLAMA A TESSERACT: la orientacion la corrige el propio Paddle
+    (use_doc_orientation_classify en paddle_ocr._construir).
     """
+    if MOTOR == "paddle":
+        return imagen
     try:
         import pytesseract
 
@@ -303,11 +395,15 @@ POR_DEFECTO = UN_SOLO_BLOQUE
 #   'auto'       Tesseract, y PaddleOCR SOLO donde Tesseract no saco nada legible
 #
 # 'auto' no puede salir peor que 'tesseract': solo entra a rescatar donde ya se
-# habia fallado. Por eso es el que conviene por defecto, y por eso Paddle apenas se
-# paga -- sus modelos tardan entre cinco y quince segundos en cargar, pero eso solo
-# ocurre si algun archivo lo necesita.
+# habia fallado.
 MOTORES = ("tesseract", "paddle", "auto")
-MOTOR = "auto"
+# PADDLE POR DEFECTO. Con 'auto', un equipo sin Tesseract instalado -- Tesseract es
+# un programa aparte, no una libreria de pip -- dejaba cada escaneo y cada imagen
+# como 'Tesseract is missing': en una tanda real, mas de la mitad de los archivos
+# sin leer, y la tanda 'terminaba' en una hora. Paddle se instala con pip, corre
+# en GPU y en CPU, y lee mejor. Tesseract solo se usa si alguien lo pide a mano con
+# elegir('tesseract') o elegir('auto').
+MOTOR = "paddle"
 
 # Cuando se considera que Tesseract no saco nada y hay que llamar al rescate. El
 # umbral de parece_ruido() no basta aqui: exige 60 caracteres para opinar, y la
@@ -351,6 +447,7 @@ def leer_imagen(imagen, enderezar: bool = True, agrandar: bool = False,
 
     if MOTOR == "paddle":
         texto, detalle = paddle_ocr.leer(imagen)
+        _anotar_error(detalle)
         return texto, _marca_paddle(detalle)
 
     texto = _de_imagen(imagen, enderezar=False, agrandar=False, psm=psm)
@@ -367,13 +464,22 @@ def leer_imagen(imagen, enderezar: bool = True, agrandar: bool = False,
     return rescatado, _marca_paddle(detalle) + " (rescued after Tesseract)"
 
 
-def _motor_disponible() -> tuple[bool, str]:
-    """Si el motor elegido se puede usar. En 'auto' basta con Tesseract."""
+def motor_disponible() -> tuple[bool, str]:
+    """(se puede usar el motor elegido, por que no). En 'auto' basta con Tesseract.
+
+    Publica porque quien monta esto en un servidor necesita poder preguntarlo AL
+    ARRANCAR. Si se espera al primer documento, un motor que falta se parece por el
+    log a un PDF vacio, y son dos problemas muy distintos.
+    """
     from . import paddle_ocr
 
     if MOTOR == "paddle":
         return paddle_ocr.disponible()
     return disponible()
+
+
+# El nombre viejo, que se usa mas abajo en este mismo modulo.
+_motor_disponible = motor_disponible
 
 
 def _marca_paddle(detalle: dict) -> str:
@@ -495,6 +601,7 @@ def texto_de_imagen(datos: bytes, minimo: int = MINIMO_ACEPTABLE) -> tuple[str, 
     produccion documental viene como imagen dentro de un Word y son once caracteres
     ('%98Bf3@d2xQ'). Un minimo ciego la mataria y dejaria 147 MB sin abrir.
     """
+    _empezar()
     puede, motivo = _motor_disponible()
     if not puede:
         return "", motivo, ""
@@ -528,7 +635,7 @@ def texto_de_imagen(datos: bytes, minimo: int = MINIMO_ACEPTABLE) -> tuple[str, 
     except Exception as error:  # noqa: BLE001
         return "", f"OCR could not read the image ({type(error).__name__})", ""
     if not texto.strip():
-        return "", "OCR found no text in the image", ""
+        return "", _sin_texto("OCR found no text in the image"), ""
     if len(texto.strip()) < minimo:
         return "", (f"OCR returned only {len(texto.strip())} characters: "
                     "too little to be text"), ""
@@ -544,6 +651,7 @@ def texto_de_pdf(datos: bytes, paginas: int) -> tuple[str, str, str]:
     instalado Poppler por fuera, que en Windows es otra descarga suelta que alguien
     tiene que recordar. PyMuPDF es una sola rueda de pip y no depende de nada mas.
     """
+    _empezar()
     puede, motivo = _motor_disponible()
     if not puede:
         return "", motivo, ""
@@ -569,13 +677,14 @@ def texto_de_pdf(datos: bytes, paginas: int) -> tuple[str, str, str]:
 
     texto = "\n".join(partes)
     if not texto.strip():
-        return "", "OCR got no text: unreadable", ""
+        return "", _sin_texto("OCR got no text: unreadable"), ""
     if parece_ruido(texto):
         return "", "OCR returned noise, not words: the pages have no readable text", ""
     # En 'auto' unas paginas las puede leer uno y otras el otro, y eso hay que
     # decirlo: no es lo mismo un documento leido entero por Tesseract que uno donde
     # la mitad la rescato Paddle.
-    return texto, "", " + ".join(sorted(set(motores))) or "Tesseract OCR"
+    return texto, "", (" + ".join(sorted(set(motores)))
+                       or ("PaddleOCR" if MOTOR == "paddle" else "Tesseract OCR"))
 
 
 def adjuntos_de_portfolio(datos: bytes) -> list[tuple[str, bytes]]:
@@ -614,6 +723,9 @@ def texto_sin_ocr(datos: bytes, paginas: int) -> str:
         return ""
     try:
         with pymupdf.open(stream=datos, filetype="pdf") as documento:
-            return "\n".join(p.get_text() for p in documento[: max(paginas, 1)])
+            # 0 = todas. Con max(paginas, 1) la lectura completa leia UNA pagina aqui
+            # y el PDF acababa en el OCR (o con una pagina de texto) sin motivo.
+            hojas = documento if paginas <= 0 else documento[: max(paginas, 1)]
+            return "\n".join(p.get_text() for p in hojas)
     except Exception:  # noqa: BLE001 - si no abre, ya lo dira el OCR
         return ""

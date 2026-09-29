@@ -75,8 +75,10 @@ manuscrita, pero hay expedientes cuyo protective order prohíbe mandar material
 confidencial a una herramienta de IA abierta o a un modelo de lenguaje. El valor por
 defecto es el que no puede equivocarse.
 
-**Si Tesseract no está instalado, no se rompe nada.** `disponible()` lo comprueba y
-la lectura devuelve el motivo como cualquier otro fallo.
+**Si un motor no está instalado, no se rompe nada.** `disponible()` lo comprueba y
+la lectura devuelve el motivo como cualquier otro fallo. Y si el motor falla al leer,
+el motivo es **el error del motor**, no «sin texto»: un fallo de Paddle que se
+escondía así dejó una tanda entera de escaneos sin leer sin que nadie lo notara.
 
 ## Lo que se midió, y con qué resultado
 
@@ -93,7 +95,7 @@ acompaña a la constante.
 `psm 6` supone **una sola columna**. Es lo correcto para cartas, escritos y
 formularios; para un periódico a tres columnas sería peor.
 
-## Los dos motores, y por qué están los dos
+## Los dos motores, y por qué manda Paddle
 
 Ganan en problemas distintos:
 
@@ -102,9 +104,19 @@ Ganan en problemas distintos:
   envío, donde Tesseract devuelve veinte caracteres inservibles y Paddle saca el
   número de guía entero.
 
-Por eso el valor por defecto es `MOTOR = "auto"`: manda Tesseract, y Paddle entra
-solo cuando lo que vuelve es demasiado corto o parece ruido. Se cambia con
-`ocr.elegir("tesseract" | "paddle" | "auto")`.
+**El valor por defecto es `MOTOR = "paddle"`.** Antes era `"auto"` (manda
+Tesseract y Paddle rescata), y en la práctica fallaba por donde menos se veía:
+Tesseract es un programa aparte, no un paquete de pip, y en los equipos donde no estaba
+instalado **cada escaneo y cada imagen salía `Tesseract is missing`**. Paddle se
+instala con pip, corre igual en GPU que en CPU y lee con confianza por fragmento.
+Tesseract sigue disponible con `ocr.elegir("tesseract" | "auto")`.
+
+Con Paddle, **la página la endereza el propio Paddle** (`use_doc_orientation_classify`):
+el enderezado de antes lo hacía Tesseract y ya no se le llama.
+
+**En CPU, sin oneDNN.** Con `paddlepaddle` 3.3.1 la aceleración oneDNN (MKLDNN) de CPU
+revienta en cada predicción (`NotImplementedError: ConvertPirAttribute2RuntimeAttribute
+not support`). `paddle_ocr` la apaga en CPU (`enable_mkldnn=False`); en GPU no aplica.
 
 Las dos rutas reciben **la misma imagen** ya enderezada y escalada, para que la
 comparación mida el motor y no el preprocesado.
@@ -155,7 +167,7 @@ json.dumps(registro, ensure_ascii=False)   # una línea del fichero
 
 ```json
 {"file_name": "SCAN_001.png", "subfolder": "(folder root)", "size_mb": 0.0,
- "was_read": true, "read_with": "Tesseract OCR (image)", "not_read_because": null,
+ "was_read": true, "read_with": "PaddleOCR (mean confidence 0.97) (image)", "not_read_because": null,
  "document_type": "Notice of motion", "goes_to": "03_Litigation/Motions",
  "decided_by": "el contenido (titulo)", "decided_because": "NOTICE OF MOTION",
  "contains_ssn": true, "extracted_text_length": 42, "extracted_text": "..."}
@@ -192,10 +204,17 @@ tomada sin saber cuántos documentos llevan datos personales no es una decisión
 capacidad, varios procesos detrás de una cola — nunca varios modelos dentro del mismo
 proceso.
 
-**Hay un tope de tamaño y existe por algo.** `ficha_de` no lee nada por encima de 25
-MB (`max_mb`). Un escaneo de cuatrocientas páginas cuesta minutos y no dice más que
-uno de veinte sobre qué documento es; en un servidor, además, es lo que impide que un
-archivo enorme bloquee a los demás.
+**La lectura es completa por defecto.** `ficha_de` lee todas las páginas y no tiene
+tope de tamaño: la ficha es el texto del documento, no una muestra, y con un tope los
+escaneos largos —justo los que solo tienen texto si se les hace OCR— quedaban a medias.
+Si un servidor necesita que un archivo enorme no bloquee a los demás, el tope se pasa:
+`ficha_de(..., paginas=4, max_mb=25)`.
+
+**Cada archivo se lee una vez.** `ficha_de` clasifica con el texto que ya leyó (su
+principio, unas dos páginas), en vez de volver a leer el archivo. Antes lo leía dos
+veces, y un escaneo pasaba dos veces por el OCR. Comprobado sobre 119 documentos: la
+clasificación sale igual en 118; el que cambia es un `.doc`, formato que antes no
+tenía lector.
 
 **Imágenes descomprimidas enormes.** Pillow avisa por encima de ~89 megapíxeles y
 falla por encima de ~179. Con entrada de terceros eso es una vía de denegación de
@@ -212,7 +231,10 @@ nombre con un 400 seco. Nos costó el 20% de una migración.
 | | |
 |---|---|
 | `ocr.py` · `paddle_ocr.py` | píxeles a texto, dos motores |
-| `lectores.py` | la cascada por formato |
+| `lectores.py` | la cascada por formato, y el olfateo por contenido |
+| `legado.py` | `.doc` y `.xls` de Office 97-2003 |
+| `otros_formatos.py` | rtf, xml, eml, mht, xlsm/xlsb/ods, dotx/docm, odt, pptx |
+| `disfrazados.py` | lo que no dice lo que es, heic/jfif, 7z y winmail.dat |
 | `clasificacion.py` | texto a tipo de documento, y su carpeta en cada plantilla |
 | `equivalencias.py` | nombre de carpeta a nombre de carpeta |
 | `plantillas.py` | las dos estructuras. Se sustituyen para adaptarlo a otra casa |
@@ -221,7 +243,29 @@ nombre con un 400 seco. Nos costó el 20% de una migración.
 
 ## Qué lee
 
-`pdf` · `docx` · `msg` · `xlsx` · `html` · `txt` · `zip` · imágenes
+`pdf` · `docx` · `doc` · `rtf` · `odt` · `msg` · `eml` · `xlsx` · `xls` · `xlsm` ·
+`xlsb` · `ods` · `pptx` · `html` · `mht` · `xml` · `txt` · `csv` · `zip` · `7z` ·
+`winmail.dat` · imágenes (`jpg`, `png`, `tif`, `heic`, `jfif`…). 45 extensiones.
+
+**Todo con pip, nada de Office**, así que corre igual en un servidor Linux. El `.doc`
+lo lee un lector propio sobre `olefile`, que reconstruye el texto desde la tabla de
+piezas de Word 97-2003. Si LibreOffice está instalado, se usa de respaldo para lo que
+ese lector no entiende (Word 6/95).
+
+**Lo que no dice lo que es se lee por lo que es.** Antes de elegir lector se miran
+los primeros bytes: un `.xls` que es HTML de un portal, un `.doc` que es RTF, un PDF
+llamado `.download`, un Word sin extensión o llamado `.pdf`. Las respuestas «es
+texto» solo se aceptan si la extensión no significa nada (`.download`, `.dat`, sin
+extensión), para que un `.css` o un `.svg` no pasen por documentos.
+
+**Lo que no es un documento se dice.** Los `._` que deja un Mac al copiar
+(*AppleDouble*) y el código de las páginas web guardadas (`jquery.min.js.download`)
+devuelven un motivo con `not a document`, para que quien reintente sepa que no hay
+nada que reintentar.
+
+**La lectura completa (`paginas=0`) no recorta nada:** todos los párrafos de un Word,
+todas las hojas y filas de un Excel, el correo entero, todas las entradas de un ZIP y
+comprimidos anidados hasta cinco niveles.
 
 El lector de ZIP abre archivos protegidos si la contraseña aparece en un documento
 hermano (`Password: X`), que es como llegan de algunos proveedores.
@@ -234,8 +278,10 @@ detrás del cuerpo, arruinando cualquier regla que mirase la cabecera.
 
 ```
 pip install -r requirements.txt
-winget install UB-Mannheim.TesseractOCR
 ```
+
+Tesseract ya no hace falta: solo si se elige a mano (`winget install
+UB-Mannheim.TesseractOCR`).
 
 `paddlepaddle` no sale de PyPI y hay que elegir CPU o GPU; las instrucciones están al
 final de `requirements.txt`. Para comprobar qué se está usando de verdad:

@@ -37,6 +37,13 @@ from .lectores import leer_con_detalle
 # principio: si no aparece en dos paginas, no aparece.
 PAGINAS = 2
 
+# Cuando el texto YA esta leido entero (ficha_de lee el documento completo), se
+# clasifica con su principio, no con todo. La ultima ventana de tipo_de_texto mira
+# el texto entero, y una mencion de pasada en la pagina 30 no puede decidir el tipo
+# de un documento que se clasifico midiendo sus dos primeras paginas. 3.000
+# caracteres por pagina es la misma escala que usa el lector de correos.
+CARACTERES_POR_PAGINA = 3000
+
 
 @dataclass(frozen=True)
 class Destino:
@@ -56,22 +63,29 @@ class Destino:
 
 
 def donde_archivar(nombre: str, datos: bytes | None = None,
-                   plantilla: str = "Foreclosure", paginas: int = PAGINAS) -> Destino:
+                   plantilla: str = "Foreclosure", paginas: int = PAGINAS, *,
+                   texto: str | None = None, con_que: str = "") -> Destino:
     """La carpeta que le toca a este archivo dentro de su expediente.
 
     `datos` puede ir vacio: entonces solo se intenta el peldano del nombre, que no
     necesita descargar nada. Es util para decidir de antemano a cuantos archivos
     hace falta abrirles el fichero.
+
+    `texto` (y `con_que`) si el documento YA se leyo: se clasifica con su principio
+    y no se vuelve a leer. Sin esto, ficha_de leia cada archivo dos veces -- una para
+    el texto y otra para clasificar --, y un escaneo pasaba DOS veces por el OCR.
     """
     tipo, _ = clasificacion.tipo_de_nombre(nombre)
     if tipo is not None and tipo.destino(plantilla):
         return Destino(tipo.destino(plantilla), tipo.nombre, tipo.certeza, "el nombre")
 
-    if not datos:
+    if texto is not None:
+        texto = texto[: max(paginas, 1) * CARACTERES_POR_PAGINA]
+    elif not datos:
         return Destino("", "", "", "")
-
-    extension = nombre.rsplit(".", 1)[-1].lower() if "." in nombre else ""
-    texto, _, con_que = leer_con_detalle(extension, datos, paginas)
+    else:
+        extension = nombre.rsplit(".", 1)[-1].lower() if "." in nombre else ""
+        texto, _, con_que = leer_con_detalle(extension, datos, paginas)
     # (tipo, EVIDENCIA, donde) -- en ese orden. Tenerlo al reves ponia en
     # `se_decidio` la linea que hizo coincidir, que es un valor distinto por archivo
     # y no sirve para agrupar ni para saber cuanto fiarse.

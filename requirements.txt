@@ -10,19 +10,25 @@ python-docx==1.2.0        # .docx
 extract-msg==0.56.1       # correos .msg
 openpyxl==3.1.5           # .xlsx
 
+# --- formatos viejos y poco comunes (legado.py, otros_formatos.py, disfrazados.py) --
+python-calamine==0.8.2    # .xls, .xlsm, .xlsb, .ods
+olefile==0.47             # .doc (Word 97-2003): lector propio sobre el contenedor OLE
+pillow-heif==1.8.0        # .heic, fotos de iPhone (pide pillow>=11.1)
+py7zr==1.1.3              # .7z
+tnefparse==1.4.0          # winmail.dat de Outlook
+
 # --- OCR ---
 pillow==11.4.0
 numpy==2.3.5
-pytesseract==0.3.13       # necesita el binario de Tesseract, ver abajo
+pytesseract==0.3.13       # OPCIONAL: solo si se elige Tesseract (ver abajo)
 paddleocr==3.7.0
 
 # --------------------------------------------------------------------------- #
-# 1. TESSERACT no es un paquete de Python: pytesseract solo lo invoca.
+# 1. TESSERACT YA NO HACE FALTA: el motor por defecto es PaddleOCR. Solo se usa
+#    si alguien lo pide con ocr.elegir('tesseract') o 'auto', y entonces hay que
+#    instalar el binario, que no es un paquete de Python:
 #
 #     winget install UB-Mannheim.TesseractOCR
-#
-#    Si no esta, el sistema NO se rompe: disponible() lo detecta y la lectura
-#    devuelve el motivo como cualquier otro fallo.
 #
 # 2. PADDLEPADDLE no se instala desde PyPI, y hay que elegir CPU o GPU. Ni
 #    paddleocr ni paddlex fijan su version, asi que sin esto pip resuelve una
@@ -41,3 +47,12 @@ paddleocr==3.7.0
 #    GPU no se usa -- y eso es peor que un error, porque no se nota.
 #
 #    Para comprobar cual se esta usando de verdad:  python leer.py --diagnostico
+#
+#    EN CPU, paddle_ocr apaga oneDNN (enable_mkldnn=False): con paddlepaddle 3.3.1
+#    revienta en cada prediccion. Con 3.2.0 no se ha visto el fallo, pero apagarlo
+#    no hace dano en ninguna de las dos.
+#
+# 3. LibreOffice es OPCIONAL: si esta (apt install libreoffice-writer
+#    libreoffice-calc), legado.py lo usa de respaldo para los .doc / .xls que su
+#    lector propio no entiende (Word 6/95, archivos a medio romper). Sin el, esos
+#    archivos salen con su motivo y no se rompe nada.
