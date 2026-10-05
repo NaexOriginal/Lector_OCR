@@ -1,0 +1,24 @@
+# Equipo SIN tarjeta NVIDIA.
+#
+#     .venv\Scripts\python.exe -m pip install -r reparto_ocr\requirements-cpu.txt
+#
+# Aqui entran tambien los que TIENEN grafica pero no es NVIDIA: una Radeon 840M o
+# una Intel integrada no aceleran Paddle. Van por procesador igual que los demas.
+
+-r requirements-comun.txt
+
+# --- Paddle sin CUDA -------------------------------------------------------
+# La rueda de CPU sale de PyPI normal, sin indice extra. Son 195 MB y no lleva
+# CUDA dentro: por eso no acelera aunque haya una grafica en el equipo.
+paddlepaddle==3.3.1
+
+# SI ANTES INSTALASTE LA DE GPU, quitala primero. Tener las dos deja a Paddle
+# eligiendo cual carga, y la respuesta cambia entre arranques:
+#
+#     .venv\Scripts\python.exe -m pip uninstall -y paddlepaddle-gpu
+#
+# Y BAJA LOS HILOS DE OpenMP antes de lanzar. Por defecto coge todos los nucleos,
+# asi que dos procesos en la misma maquina se pelean por el procesador y los dos
+# van mas lentos que uno solo:
+#
+#     set OMP_NUM_THREADS=4
