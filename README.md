@@ -289,3 +289,51 @@ final de `requirements.txt`. Para comprobar qué se está usando de verdad:
 ```
 python leer.py --diagnostico
 ```
+
+## Scripts de SharePoint y variables de entorno
+
+Aparte de la librería, [`scripts/`](scripts/) tiene las herramientas de operación:
+consultar SharePoint (`scripts/sharepoint/consultar.py`) y el reparto de la lectura entre
+equipos (`scripts/reparto_ocr/`). Están explicadas en
+[`scripts/README.md`](scripts/README.md).
+
+La conexión a SharePoint necesita **dos variables de entorno**:
+
+| Variable | Qué es | Dónde se ve |
+|---|---|---|
+| `GRAPH_TENANT_ID` | El tenant del despacho | Entra ID > App registrations > la app > Overview: *Directory (tenant) ID* |
+| `GRAPH_CLIENT_ID` | La app de Graph del despacho | Misma pantalla: *Application (client) ID* |
+
+Opcionales, con su valor por defecto:
+
+| Variable | Por defecto |
+|---|---|
+| `GRAPH_SITIO_MATTERS` | `amshenllp.sharepoint.com:/teams/Matters` |
+| `GRAPH_SITIO` | `amshenllp.sharepoint.com:/teams/RevOps-2.Projects` |
+| `GRAPH_CARPETA` | `zz-pruebas-no-usar` |
+
+**Con fichero:** copia [`.env.example`](.env.example) como `.env`, rellénalo y déjalo en la
+raíz del repositorio (lanzando los comandos desde ahí) o en `scripts/sharepoint/`:
+
+```
+copy .env.example .env
+python scripts\sharepoint\consultar.py --quien
+```
+
+Ojo: tiene que llamarse exactamente `.env`. El Bloc de notas guarda `.env.txt` sin
+avisar.
+
+**Sin fichero:** en PowerShell, solo para esa ventana:
+
+```powershell
+$env:GRAPH_TENANT_ID = "..."
+$env:GRAPH_CLIENT_ID = "..."
+python scripts\sharepoint\consultar.py --quien
+```
+
+Si existen las dos cosas, mandan las variables de entorno.
+
+Estos valores **no son contraseñas**: identifican el tenant y la app. El acceso lo da
+iniciar sesión con tu cuenta: la primera vez se abre el navegador, y la conexión solo ve
+lo que tu cuenta ya ve en SharePoint. La sesión se guarda en `.msal_cache.json`, que sí
+es sensible. Ni ese fichero ni el `.env` se suben: los dos están en el `.gitignore`.

@@ -1,0 +1,34 @@
+# Equipo CON tarjeta NVIDIA.
+#
+#     .venv\Scripts\python.exe -m pip install -r reparto_ocr\requirements-gpu.txt
+#
+# Solo valen las NVIDIA: Paddle acelera por CUDA. Una Radeon o una Intel integrada
+# NO sirven por mucha grafica que sean -- usa requirements-cpu.txt.
+
+-r requirements-comun.txt
+
+# --- Paddle con CUDA -------------------------------------------------------
+# LA VERSION DE CUDA NO ES INTERCAMBIABLE Y DEPENDE DE LA TARJETA. Esta linea vale
+# para la RTX 5070 Ti de RevOps, que es Blackwell (sm_120) y necesita CUDA 12.8 o
+# superior; la rueda cu118 que sugiere la documentacion general no le sirve.
+#
+# SI TU TARJETA ES OTRA, mira que indice te toca antes de instalar:
+#
+#     nvidia-smi                 arriba a la derecha sale tu version de CUDA
+#
+#     CUDA 11.8  ->  cu118
+#     CUDA 12.6  ->  cu126
+#     CUDA 12.8  ->  cu128
+#     CUDA 12.9  ->  cu129     <- el de aqui abajo
+#
+# De los indices publicados, cu129 era el UNICO con rueda para Windows y Python
+# 3.12 cuando se comprobo. Si el tuyo no tiene, usa el mayor que la tenga.
+--extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cu129/
+paddlepaddle-gpu==3.3.1
+
+# COMPRUEBA QUE QUEDO EN GPU. El riesgo no es que reviente: es que caiga a CPU en
+# silencio y el equipo vaya diez veces mas lento sin que nadie sepa por que.
+#
+#     .venv\Scripts\python.exe reparto_ocr\comprobar.py
+#
+# Tiene que decir 'va por GPU'. Si dice 'va por CPU', la rueda no es la de tu CUDA.

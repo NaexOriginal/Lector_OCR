@@ -23,3 +23,13 @@ __pycache__/
 *.bak
 salida/
 resultados/
+
+# Sesion de Microsoft (lleva el token de quien inicio sesion)
+.msal_cache.json
+
+# Datos que generan los scripts: listados, diarios con texto de clientes, colas
+*.jsonl
+*.parcial
+log_*.txt
+ya_leidos*.txt
+cola_ocr.txt
