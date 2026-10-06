@@ -284,7 +284,27 @@ Tesseract ya no hace falta: solo si se elige a mano (`winget install
 UB-Mannheim.TesseractOCR`).
 
 `paddlepaddle` no sale de PyPI y hay que elegir CPU o GPU; las instrucciones están al
-final de `requirements.txt`. Para comprobar qué se está usando de verdad:
+final de `requirements.txt`.
+
+**Con GPU NVIDIA, la forma que funciona es el `.whl`**, no el índice de Paddle (la descarga
+de ~800 MB suele cortarse o traer otra versión):
+
+```
+pip install -r requirements.txt
+pip install paddlepaddle_gpu-3.3.1-cp312-cp312-win_amd64.whl
+```
+
+| | |
+|---|---|
+| Fichero | `paddlepaddle_gpu-3.3.1-cp312-cp312-win_amd64.whl` (809.980.301 bytes) |
+| Para | Paddle 3.3.1 · CUDA 12.9 · Python 3.12 · Windows (necesario para la RTX 5070 Ti, Blackwell) |
+| SHA256 | `F5B26250B46F1F7FE8F51571392D2E8F9C07C1E32FA127F4CA563FE1A0D01103` |
+| Dónde | **No está en el repositorio** (GitHub no admite más de 100 MB). Se le pide a Rafael |
+
+Para comprobar la huella en PowerShell:
+`(Get-FileHash .\paddlepaddle_gpu-3.3.1-cp312-cp312-win_amd64.whl -Algorithm SHA256).Hash`.
+En el reparto de la lectura se usa igual, desde `scripts\reparto_ocr\`: primero
+`requirements-comun.txt` y después el `.whl` (ver `scripts\reparto_ocr\ETAPAS.md`). Para comprobar qué se está usando de verdad:
 
 ```
 python leer.py --diagnostico

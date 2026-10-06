@@ -79,6 +79,17 @@ está corriendo **ahora**: qué equipo lee qué trozos, con qué comando y cómo
 resto de documentos (`README.md`, `INSTALAR.md`, `EJECUTAR.md`, `COMANDOS.md`) explica el
 diseño y la instalación.
 
+**Instalar en un equipo con GPU:** con el `.whl` de Paddle (`paddlepaddle_gpu-3.3.1-cp312-cp312-win_amd64.whl`, 810 MB,
+CUDA 12.9, Python 3.12), no desde el índice de Paddle, que suele fallar. La rueda no está
+en el repo: se la pide a Rafael. Los comandos están en `reparto_ocr/ETAPAS.md`.
+
+**Etapas** ([`reparto_ocr/ETAPAS.md`](reparto_ocr/ETAPAS.md)): para leer primero un grupo de
+casos, por ejemplo los de 2022 en adelante, sin desmontar el reparto.
+`reparto_ocr/crear_etapa.py` calcula qué falta de esos casos y escribe una lista por
+equipo. Cada equipo la lee con `describir_casos.py --lista` en un diario aparte. La guía
+tiene los pasos para crear una etapa y aplicarla en cada equipo, y el registro de las
+etapas hechas.
+
 `reparto_ocr/codigo/` es **la copia exacta del código que se manda a cada equipo**. Es la
 que se ejecuta, así que cualquier cambio en el reparto se hace aquí y se reparte desde
 aquí. Su `extractor_completo/` es una versión del paquete `lector_ocr/` adaptada a la

@@ -33,3 +33,9 @@ resultados/
 log_*.txt
 ya_leidos*.txt
 cola_ocr.txt
+
+# Listas de etapa (ids de archivos de clientes): se generan, no se versionan
+lista_*.txt
+
+# Ruedas de Python (el .whl de Paddle GPU pesa 810 MB: no cabe en GitHub)
+*.whl

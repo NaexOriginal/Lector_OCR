@@ -46,6 +46,7 @@ import time
 from collections import Counter, defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote
 
 import pandas as pd
@@ -151,15 +152,21 @@ def hay_que_releer(ficha: dict) -> bool:
     motivo = str(ficha.get("not_read_because") or "")
     return version < VERSION_LECTURA and "no reader for" in motivo
 DIARIOS_MATTERS_PARTE = "textos_matters.parte*.jsonl"
+# Los diarios de una lectura por lista (--lista lista_X.txt -> textos_matters.lista_X.jsonl).
+# Van aparte de los de los trozos para que cada etapa tenga el suyo y no se mezclen.
+DIARIOS_MATTERS_LISTA = "textos_matters.lista_*.jsonl"
 
 
 def diarios_de(origen: str) -> list:
     """Los diarios de una pasada. Nunca los de la otra."""
     if origen == "matters":
         patron, principal = DIARIOS_MATTERS_PARTE, DIARIO_MATTERS
+        de_listas = sorted(SALIDA_DIR.glob(DIARIOS_MATTERS_LISTA))
     else:
         patron, principal = DIARIOS_PARTE, DIARIO
-    return sorted(SALIDA_DIR.glob(patron)) + ([principal] if principal.exists() else [])
+        de_listas = []
+    return (sorted(SALIDA_DIR.glob(patron)) + de_listas
+            + ([principal] if principal.exists() else []))
 
 
 def indice_de(origen: str):
@@ -433,6 +440,15 @@ def extraer(args) -> None:
     grupo = ".sinocr" if args.sin_ocr else (".ocr" if args.solo_ocr else "")
     diario_mio = (SALIDA_DIR / f"{base}.parte{mis_trozos[0]}{grupo}.jsonl" if mis_trozos
                   else (DIARIO_MATTERS if args.origen == "matters" else DIARIO))
+    # CON UNA LISTA lista_X.txt, EL DIARIO ES textos_matters.lista_X.jsonl (6-oct): cada
+    # etapa escribe en el suyo y no se mezcla con lo leido antes. Para que la lectura lo
+    # vuelva a encontrar al relanzar, la lista tiene que llamarse lista_<algo>.txt.
+    if args.lista and args.origen == "matters":
+        etapa = Path(args.lista).stem
+        if not etapa.startswith("lista_"):
+            raise SystemExit(f"La lista tiene que llamarse lista_<algo>.txt (es {Path(args.lista).name}): "
+                             "de su nombre sale el del diario de esta etapa.")
+        diario_mio = SALIDA_DIR / f"{base}.{etapa}{grupo}.jsonl"
     if args.sin_ocr and args.solo_ocr:
         raise SystemExit("--sin-ocr y --solo-ocr son las dos pasadas: elige una.")
     if args.sin_ocr:
@@ -465,6 +481,22 @@ def extraer(args) -> None:
         # JSONL no sabria en que carpeta ponerse.
         con_reparto = {r[0].split("/")[3] for r in reparto if len(r[0].split("/")) > 3}
         act = act[act["Carpeta"].isin(set(casos_origen) | con_reparto | set(del_plan))]
+
+    # SOLO LOS ARCHIVOS DE UNA LISTA (6-oct). Para leer primero un grupo de casos -- los
+    # de 2022 en adelante -- sin cambiar el reparto: cada equipo sigue con sus trozos y
+    # de ellos lee solo lo que esta en la lista. Va por ID DE ARCHIVO y no por nombre de
+    # expediente porque los nombres cambian (RevOps renombra) y el id no. Al quitar
+    # --lista, la siguiente corrida sigue con el resto sin repetir nada.
+    if args.lista:
+        ruta_lista = Path(args.lista)
+        if not ruta_lista.exists():
+            raise SystemExit(f"No existe la lista {ruta_lista}: copiala antes de lanzar.")
+        en_lista = {l.strip() for l in ruta_lista.read_text(encoding="utf-8").splitlines()
+                    if l.strip() and not l.startswith("#")}
+        antes = len(act)
+        act = act[act["id"].isin(en_lista)]
+        print(f"  --lista {ruta_lista.name}: {len(act):,} de {antes:,} archivos del arbol estan en "
+              f"la lista ({len(en_lista):,} ids)")
 
     # UN FALLO TRANSITORIO NO ES 'HECHO'. Aqui se daba por leido cualquier archivo
     # que tuviera una linea en el diario, y con eso los 56.900 que fallaron con un
@@ -679,7 +711,8 @@ def extraer(args) -> None:
     avisar_paginas(al_avanzar)
     pasada = "solo OCR" if args.solo_ocr else ("sin OCR" if args.sin_ocr else "completa")
     apuntar(f"ARRANQUE  pasada {pasada} | trozos {mis_trozos or 'todos'} de {args.de} | "
-            f"hilos {args.hilos} | {len(pendientes):,} archivos pendientes", en_pantalla=True)
+            f"hilos {args.hilos} | {len(pendientes):,} archivos pendientes"
+            + (f" | solo la lista {Path(args.lista).name}" if args.lista else ""), en_pantalla=True)
 
     # PADDLE, UNA VEZ Y ANTES DE LOS HILOS. Si lo importan los 8 hilos a la vez, uno
     # lo coge a medio cargar y a partir de ahi falla todo el proceso: la noche del
@@ -912,6 +945,70 @@ def extraer(args) -> None:
                     en_pantalla=True)
 
     threading.Thread(target=latir, daemon=True).start()
+
+    # LA SUBIDA CADA HORA (6-oct): lo NUEVO del diario, como un trozo con su hora, y la
+    # bitacora entera, a Documentos/JSONL/<diario>/ del sitio Matters. Asi nadie tiene que
+    # ir pasando los diarios a mano, y el avance se ve desde SharePoint.
+    #
+    # No se resube el diario entero: SharePoint guardaria una version de cientos de MB
+    # cada hora. Se sube desde donde se quedo la ultima vez (subida_<diario>.json, al lado
+    # del diario) y solo hasta el ultimo salto de linea, para no partir una ficha. Juntando
+    # los trozos en orden sale el diario completo.
+    #
+    # Si una subida falla, se apunta en la bitacora y la proxima lleva tambien lo que
+    # quedo: la lectura no se para nunca por esto.
+    subir_activo = desde_matters and not args.sin_subir
+    estado_subida = diario_mio.with_name(f"subida_{diario_mio.stem}.json")
+    carpeta_sp = f"{SUBIDA_CARPETA}/{diario_mio.stem.replace('textos_matters.', '')}"
+    candado_subida = threading.Lock()
+
+    def subir_ahora(motivo: str) -> None:
+        if not subir_activo:
+            return
+        with candado_subida:
+            try:
+                est = (json.loads(estado_subida.read_text(encoding="utf-8"))
+                       if estado_subida.exists() else {"offset": 0, "trozos": 0})
+                tam = diario_mio.stat().st_size if diario_mio.exists() else 0
+                if est["offset"] > tam:
+                    # El diario es otro (se borro y empezo de cero): se sube desde el inicio.
+                    # El contador de trozos NO vuelve a cero: los nombres no se repiten.
+                    apuntar("SUBIDA  el diario es mas corto que lo ya subido: se sube desde el inicio")
+                    est["offset"] = 0
+                    estado_subida.write_text(json.dumps(est), encoding="utf-8")
+                nuevo = b""
+                if tam > est["offset"]:
+                    with open(diario_mio, "rb") as fh:
+                        fh.seek(est["offset"])
+                        nuevo = fh.read(tam - est["offset"])
+                    nuevo = nuevo[:nuevo.rfind(b"\n") + 1]
+                if nuevo:
+                    # Numero correlativo + hora: dos trozos nunca se llaman igual (subir con el
+                    # mismo nombre REEMPLAZA en SharePoint) y ordenados por nombre quedan en orden.
+                    nombre = (f"{diario_mio.stem}.{est['trozos'] + 1:05d}."
+                              f"{datetime.now():%Y-%m-%d_%H%M%S}.jsonl")
+                    subir_a_sharepoint(g, drive, f"{carpeta_sp}/{nombre}", nuevo)
+                    est["offset"] += len(nuevo)
+                    est["trozos"] += 1
+                    estado_subida.write_text(json.dumps(est), encoding="utf-8")
+                    lineas = nuevo.count(b"\n")
+                    apuntar(f"SUBIDA  {nombre}: {lineas:,} fichas, {len(nuevo) / 2 ** 20:.1f} MB "
+                            f"-> {carpeta_sp} ({motivo})")
+                if bitacora.exists():
+                    subir_a_sharepoint(g, drive, f"{carpeta_sp}/{bitacora.name}", bitacora.read_bytes())
+            except Exception as error:  # noqa: BLE001 - la subida nunca para la lectura
+                apuntar(f"SUBIDA FALLIDA ({motivo}): {type(error).__name__}: {str(error)[:150]} "
+                        "| se reintenta en la proxima", en_pantalla=True)
+
+    fin_de_subida = threading.Event()
+
+    def subir_cada_hora() -> None:
+        while not fin_de_subida.wait(SUBIDA_CADA_MIN * 60):
+            subir_ahora("cada hora")
+
+    if subir_activo:
+        subir_ahora("al arrancar")           # lo que quedara de la corrida anterior
+        threading.Thread(target=subir_cada_hora, daemon=True).start()
     try:
         with ThreadPoolExecutor(max_workers=args.hilos) as piscina:
             for n, _ in enumerate(piscina.map(uno, pendientes), 1):
@@ -938,6 +1035,8 @@ def extraer(args) -> None:
         apuntar(f"FIN  {como}: {hechos_ahora:,} de {len(pendientes):,} en "
                 f"{_duracion(time.time() - arranque)} | "
                 + ", ".join(f"{k} {v:,}" for k, v in cuenta.most_common()), en_pantalla=True)
+        fin_de_subida.set()
+        subir_ahora("al terminar")
     print()
     if hechos_ahora < len(pendientes):
         print(f"  quedan {len(pendientes) - hechos_ahora:,} para la proxima: "
@@ -1249,7 +1348,8 @@ def como_se_llaman_ahora(g) -> dict[str, str]:
     return reales, por_clave
 
 
-def armar(caso: str, fichas: list[dict], total_del_caso: int | None = None) -> str:
+def armar(caso: str, fichas: list[dict], total_del_caso: int | None = None,
+          carpeta_id: str | None = None) -> str:
     """El JSONL de un caso: una linea por archivo, precedida de una de resumen.
 
     JSONL y no JSON por dos razones practicas. Se puede AÑADIR: cuando se lean mas
@@ -1259,10 +1359,17 @@ def armar(caso: str, fichas: list[dict], total_del_caso: int | None = None) -> s
 
     La primera linea lleva el resumen y se reconoce por tener 'matter'; las demas
     son documentos y llevan 'file_name'.
+
+    EL ID DE SHAREPOINT VA PRIMERO en cada linea (6-oct): es lo que no cambia aunque el
+    archivo se renombre o se mueva, y lo que hay que tener a mano para ir a buscarlo.
+    Antes se quitaba al armar y solo quedaba, en las copias, el 'copied_from'.
+    `carpeta_id` es el de la carpeta del expediente, si quien llama lo conoce.
     """
-    limpias = [{k: v for k, v in f.items() if k not in ("id", "caso")} for f in fichas]
+    limpias = [{"sharepoint_id": f.get("id"),
+                **{k: v for k, v in f.items() if k not in ("id", "caso")}} for f in fichas]
     limpias.sort(key=lambda f: (f.get("subfolder") or "", f.get("file_name") or ""))
     cabecera = {
+        **({"sharepoint_folder_id": carpeta_id} if carpeta_id else {}),
         "matter": caso,
         "generated": datetime.now().isoformat(timespec="seconds"),
         "files_described": len(limpias),
@@ -1287,6 +1394,60 @@ def armar(caso: str, fichas: list[dict], total_del_caso: int | None = None) -> s
     }
     return "\n".join(json.dumps(o, ensure_ascii=False)
                      for o in [cabecera, *limpias]) + "\n"
+
+
+# LA SUBIDA DE LOS DIARIOS A SHAREPOINT (6-oct): a Documentos/JSONL/ del sitio Matters, una
+# carpeta con permisos propios (solo RevOps). NO va dentro de Matters/: ahi cada carpeta de
+# primer nivel es un expediente para el arbol, y sus .jsonl se leerian como documentos.
+SUBIDA_CARPETA = "JSONL"
+SUBIDA_CADA_MIN = 60
+# Graph exige que cada fragmento de una sesion de subida sea multiplo de 320 KiB.
+FRAGMENTO_SESION = 320 * 1024 * 30
+
+
+def subir_a_sharepoint(g: Graph, drive: str, ruta_rel: str, crudo: bytes) -> None:
+    """Sube (o reemplaza) un fichero en el drive. Lanza OSError si no puede.
+
+    NO USA g.get NI g.post A PROPOSITO: ante un 403 o un 404 terminan el proceso con
+    sys.exit, que es lo correcto en un recorrido pero no aqui -- una subida que falla no
+    puede parar la lectura. Renueva el token si caduco (las corridas son de 12 horas y el
+    token dura una) y espera si SharePoint frena.
+    """
+    import requests
+
+    base = f"https://graph.microsoft.com/v1.0/drives/{drive}/root:/{quote(ruta_rel, safe='/')}"
+
+    def pedir(metodo: str, url: str, **kw):
+        r = None
+        for intento in range(5):
+            r = g._pedir(metodo, url, **kw)
+            if r.status_code == 401:
+                g.sesion.headers.update({"Authorization": f"Bearer {g._token()}"})
+                continue
+            if r.status_code in (429, 503, 504):
+                time.sleep(min(120, int(r.headers.get("Retry-After", 2 ** intento))))
+                continue
+            return r
+        return r
+
+    if len(crudo) < TROZO:
+        r = pedir("put", f"{base}:/content", data=crudo)
+        if r.status_code >= 300:
+            raise OSError(f"{r.status_code}: {r.text[:150]}")
+        return
+    r = pedir("post", f"{base}:/createUploadSession",
+              json={"item": {"@microsoft.graph.conflictBehavior": "replace"}})
+    if r.status_code >= 300:
+        raise OSError(f"no se pudo abrir la subida: {r.status_code}: {r.text[:150]}")
+    url, total = r.json()["uploadUrl"], len(crudo)
+    for inicio in range(0, total, FRAGMENTO_SESION):
+        trozo = crudo[inicio:inicio + FRAGMENTO_SESION]
+        # La URL de la sesion ya lleva la autorizacion: no se manda la cabecera.
+        r = requests.put(url, data=trozo, timeout=300, headers={
+            "Content-Length": str(len(trozo)),
+            "Content-Range": f"bytes {inicio}-{inicio + len(trozo) - 1}/{total}"})
+        if r.status_code >= 300:
+            raise OSError(f"fragmento {inicio}: {r.status_code}: {r.text[:120]}")
 
 
 def subir_por_trozos(g: Graph, drive: str, ruta: str, crudo: bytes) -> None:
@@ -1347,6 +1508,12 @@ def main() -> None:
     p.add_argument("--solo-ocr", action="store_true",
                    help="Pasada de los equipos CON GPU: imagenes y la cola "
                         "(salida/cola_ocr.txt)")
+    p.add_argument("--sin-subir", action="store_true",
+                   help="No subir el diario ni la bitacora a Documentos/JSONL de SharePoint "
+                        f"(por defecto se suben cada {SUBIDA_CADA_MIN} minutos)")
+    p.add_argument("--lista", default=None,
+                   help="Fichero con ids de archivo (uno por linea): solo se leen esos. "
+                        "Ej.: codigo\\salida\\ids_2022_en_adelante.txt")
     p.add_argument("--pesados-al-final", type=float, default=PESADOS_AL_FINAL,
                    help=f"En --solo-ocr, los escaneos de mas de N MB se leen al final "
                         f"(por defecto {PESADOS_AL_FINAL:g}; 0 = sin separar)")

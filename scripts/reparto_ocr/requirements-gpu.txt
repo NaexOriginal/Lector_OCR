@@ -1,5 +1,18 @@
 # Equipo CON tarjeta NVIDIA.
 #
+# >>> LA FORMA RECOMENDADA ES CON EL .WHL, no con este fichero. <<<
+# Instalar paddlepaddle-gpu desde el indice de Paddle, como hace este fichero, suele
+# fallar (descarga de ~800 MB que se corta, u otra version). Con la rueda ya descargada:
+#
+#     .venv\Scripts\python.exe -m pip install -r requirements-comun.txt
+#     .venv\Scripts\python.exe -m pip install paddlepaddle_gpu-3.3.1-cp312-cp312-win_amd64.whl
+#
+# paddlepaddle_gpu-3.3.1-cp312-cp312-win_amd64.whl: 810 MB, CUDA 12.9, Python 3.12.
+# SHA256 F5B26250B46F1F7FE8F51571392D2E8F9C07C1E32FA127F4CA563FE1A0D01103
+# La rueda NO esta en el repositorio (GitHub no admite mas de 100 MB): se la pide a Rafael.
+#
+# Lo de abajo queda como alternativa, si no se tiene la rueda:
+#
 #     .venv\Scripts\python.exe -m pip install -r reparto_ocr\requirements-gpu.txt
 #
 # Solo valen las NVIDIA: Paddle acelera por CUDA. Una Radeon o una Intel integrada

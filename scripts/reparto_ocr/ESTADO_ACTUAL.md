@@ -1,6 +1,20 @@
 # Reparto actual de la lectura de Matters
 
-**Actualizado: 5-oct-2026.** Si cambias el reparto, cambia también este documento.
+**Actualizado: 6-oct-2026.** Si cambias el reparto, cambia también este documento.
+
+> **AHORA MISMO (desde el 6-oct): etapa 2022.** Los 3 equipos con GPU leen **primero** los
+> expedientes con índice de 2022 en adelante, cada uno con su lista
+> (`lista_2022_rafael.txt`, `lista_2022_gpu2.txt`, `lista_2022_gpu3.txt`). Lo hacen en
+> lectura completa con `--lista` y escriben en `textos_matters.lista_2022_<equipo>.jsonl`.
+> Ver [`ETAPAS.md`](ETAPAS.md): cómo se creó, cómo se aplica y el registro de la etapa.
+> Los diarios de la etapa **se suben solos cada hora** a `Documentos/JSONL/` del sitio
+> Matters (carpeta solo de RevOps, fuera de `Matters/`).
+> Todos los equipos usan el listado de Matters del **5-oct**. Cuando termine, se vuelve a la
+> pasada 2 de abajo quitando `--lista`.
+>
+> Los diarios hasta el 6-oct están en un **respaldo congelado** fuera del proyecto
+> (`C:\1_Documentos_Personales\Respaldo_JSONL_OCR\2026-10-06`). En el equipo de Rafael se
+> borró el diario de la pasada 2: lo leído allí solo está en el respaldo.
 
 La lectura va en **dos pasadas**, y cada una tiene su propio reparto (su propio `--de`).
 El trozo de cada archivo sale del md5 de su contenido (quickXorHash) o, si no lo tiene,
