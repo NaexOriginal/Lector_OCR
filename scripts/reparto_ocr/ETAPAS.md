@@ -128,16 +128,70 @@ Cada una en PowerShell, desde la carpeta que contiene `codigo\`. Va siempre desp
 
 ```powershell
 # Rafael
-while ($true) { python codigo\describir_casos.py --extraer --por-caso 0 --paginas 0 --max-mb 0 --hilos 1 --minutos 720 --lista codigo\salida\lista_2022_rafael.txt }
+while ($true) { python codigo\describir_casos.py --extraer --por-caso 0 --paginas 0 --max-mb 0 --hilos 1 --minutos 720 --lista codigo\salida\lista_casos2022_rafael.txt --armar-casos 2022 }
 # GPU 2
-while ($true) { python codigo\describir_casos.py --extraer --por-caso 0 --paginas 0 --max-mb 0 --hilos 1 --minutos 720 --lista codigo\salida\lista_2022_gpu2.txt }
+while ($true) { python codigo\describir_casos.py --extraer --por-caso 0 --paginas 0 --max-mb 0 --hilos 1 --minutos 720 --lista codigo\salida\lista_casos2022_gpu2.txt --armar-casos 2022 }
 # GPU 3
-while ($true) { python codigo\describir_casos.py --extraer --por-caso 0 --paginas 0 --max-mb 0 --hilos 1 --minutos 720 --lista codigo\salida\lista_2022_gpu3.txt }
+while ($true) { python codigo\describir_casos.py --extraer --por-caso 0 --paginas 0 --max-mb 0 --hilos 1 --minutos 720 --lista codigo\salida\lista_casos2022_gpu3.txt --armar-casos 2022 }
 ```
 
 Si el entorno se creó con `python -m venv .venv` y no está activado, se cambia `python`
 por `.venv\Scripts\python.exe`. Las listas y el listado de Matters **no están en el
 repositorio**: los reparte Rafael.
+
+## Reparto POR CASOS y armado de los `Claude-{ID}.jsonl` (desde el 6-oct)
+
+La etapa 2022 se reparte **por casos enteros**, no por trozos: cada caso lo lee un solo
+equipo, y los casos que comparten un documento pendiente van juntos para no pasarle el
+OCR dos veces. Las listas son `lista_casos2022_<equipo>.txt`, y la tabla de qué caso lleva
+cada equipo es `salida\etapa_2022\reparto_casos_2022.csv`. Los equipos leen igual que
+antes, con `--lista`, y suben su diario cada hora.
+
+**Cada equipo arma SUS casos**, en su misma ventana de lectura, con la opción
+`--armar-casos 2022`. El equipo sale del nombre de su lista. La lógica está en
+`codigo\armar_casos.py`. Al arrancar, y luego cada hora:
+
+1. junta lo leído: su base y sus diarios de etapa;
+2. arma cada caso suyo **completo**: todos sus archivos leídos, resueltos sin texto de forma
+   definitiva o copia exacta de uno leído;
+3. lo comprueba **en directo** contra su carpeta de Matters, y no lo sube si cambió;
+4. lo sube a `Documentos/JSONL/Casos_<equipo>/Claude-{ID}.jsonl`. Si dos carpetas tienen
+   el mismo ID, va el índice detrás: `Claude-900043_0.jsonl`.
+
+Si falla, sale `ARMADO FALLIDO` y la lectura sigue. Los `Claude-{ID}.jsonl` **no van a las
+carpetas de los casos**: se quedan en `JSONL/` hasta el proceso de limpieza. Un caso subido no
+se vuelve a subir mientras no cambie su número de archivos.
+
+**Lo que necesita cada equipo en `codigo\salida\`:**
+
+| Fichero | Qué es |
+|---|---|
+| `arbol_matters.jsonl` | El listado de Matters de la etapa |
+| `lista_casos2022_<equipo>.txt` | Lo que le falta leer de sus casos |
+| `etapa_2022\reparto_casos_2022.csv` | Qué caso lleva cada equipo |
+| `etapa_2022\base_fichas_2022_<equipo>.jsonl` | Lo ya leído **antes** de la etapa de sus casos, y los originales de sus copias. **Lleva texto de clientes**: solo por canales internos |
+
+Las bases las prepara Rafael una vez por etapa, pasándole **todo** lo leído (el respaldo
+entero y los diarios de etapa que ya haya). Así encuentra también los originales de las
+copias que están en casos de antes:
+
+```powershell
+python codigo\armar_casos.py --preparar-bases --etapa 2022 `
+    --reparto <reparto_casos_2022.csv> --arbol <arbol de la etapa>.jsonl `
+    --fuentes <respaldo\1_lectura_ocr_gpu> <respaldo\2_lectura_sin_ocr> <respaldo\7_versiones_antiguas> <diarios de etapa> `
+    --salida <carpeta>
+```
+
+Comprobado el 6-oct: lo que cada base deja sin resolver es **exactamente** la lista de su
+equipo. Al terminar la lista, todos sus casos quedan completos.
+
+Para probar el armado sin subir nada, desde la carpeta que contiene `codigo\`:
+`python codigo\armar_casos.py --equipo <equipo> --simular --una-vez`. Los JSONL quedan en
+`codigo\salida\etapa_2022\simulados\`.
+
+**Si un equipo ya había leído un archivo de su lista en un diario anterior**, no lo relee:
+al arrancar copia su ficha al diario de la etapa, para que se suba y su caso se pueda
+armar.
 
 ## 3. Al terminar la etapa
 

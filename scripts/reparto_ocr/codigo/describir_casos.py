@@ -176,6 +176,17 @@ def indice_de(origen: str):
 
 SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 
+
+# SEPARADORES DE LINEA DENTRO DEL TEXTO (6-oct). JSON admite U+2028, U+2029 y U+0085 sin
+# escapar, pero str.splitlines() -- y otros lectores -- cortan la linea por ellos. 505 fichas
+# de los diarios los traian: al releer el diario parecian lineas rotas, el archivo no constaba
+# como hecho y se volvia a leer en cada arranque. Se escriben escapados (\u2028), que es el
+# mismo JSON, y los diarios se parten solo por "\n".
+def linea_json(objeto) -> str:
+    linea = json.dumps(objeto, ensure_ascii=False)
+    linea = linea.replace("\u2028", "\\u2028").replace("\u2029", "\\u2029").replace("\x85", "\\u0085")
+    return linea.encode("utf-8", "replace").decode("utf-8")
+
 # Cuantas paginas de un PDF se leen POR DEFECTO. Mas de esto multiplica el tiempo
 # sin anadir mucho CUANDO SOLO SE QUIERE IDENTIFICAR el documento: lo que dice que
 # es esta al principio.
@@ -270,7 +281,7 @@ def estado_de_lectura(origen: str = "matters", pasada: str = "") -> dict:
         hechos |= {l.strip() for l in indice.read_text(encoding="utf-8").splitlines()
                    if l.strip()}
     for fichero in diarios_de(origen):
-        for linea in fichero.read_text(encoding="utf-8", errors="replace").splitlines():
+        for linea in fichero.read_text(encoding="utf-8", errors="replace").split("\n"):
             if not linea.strip():
                 continue
             try:
@@ -487,6 +498,7 @@ def extraer(args) -> None:
     # de ellos lee solo lo que esta en la lista. Va por ID DE ARCHIVO y no por nombre de
     # expediente porque los nombres cambian (RevOps renombra) y el id no. Al quitar
     # --lista, la siguiente corrida sigue con el resto sin repetir nada.
+    en_lista: set = set()
     if args.lista:
         ruta_lista = Path(args.lista)
         if not ruta_lista.exists():
@@ -531,8 +543,16 @@ def extraer(args) -> None:
         if previos:
             print(f"  {len(previos):,} ya leidos en otro equipo: se saltan")
 
+    # LO QUE YA ESTABA LEIDO EN OTRO DIARIO DE ESTE EQUIPO (6-oct). Con --lista, un archivo
+    # de la lista que este equipo ya leyo en un diario anterior no se relee, pero su ficha
+    # se COPIA al diario de la etapa: es el que se sube a SharePoint y del que se arman los
+    # casos. Sin esto, ese archivo constaria como hecho aqui y como pendiente alli, y su
+    # caso no se completaria nunca.
+    de_otro_diario: dict[str, dict] = {}
+    en_mi_diario: set = set()
     for fichero in diarios_de(args.origen):
-        for linea in fichero.read_text(encoding="utf-8", errors="replace").splitlines():
+        es_el_mio = fichero.resolve() == diario_mio.resolve()
+        for linea in fichero.read_text(encoding="utf-8", errors="replace").split("\n"):
             if not linea.strip():
                 continue
             try:
@@ -543,6 +563,13 @@ def extraer(args) -> None:
             if args.origen == "matters" and hay_que_releer(ficha):
                 transitorios += 1     # leido con lectores viejos: se relee
                 continue
+            if en_lista and ficha.get("id") in en_lista:
+                if es_el_mio:
+                    en_mi_diario.add(ficha["id"])
+                elif es_definitiva(ficha):
+                    previa = de_otro_diario.get(ficha["id"])
+                    if not (previa and previa.get("was_read") and not ficha.get("was_read")):
+                        de_otro_diario[ficha["id"]] = ficha
             if es_definitiva(ficha):
                 hechos.add(ficha["id"])
                 if ficha.get("was_read"):
@@ -556,6 +583,15 @@ def extraer(args) -> None:
                     hash_para_gpu.add(ficha["hash"])
             else:
                 transitorios += 1
+
+    pasar = [f for i, f in de_otro_diario.items() if i not in en_mi_diario]
+    if pasar:
+        with diario_mio.open("a", encoding="utf-8") as fh:
+            for f in pasar:
+                linea = linea_json(f)
+                fh.write(linea + chr(10))
+        print(f"  {len(pasar):,} archivos de la lista ya estaban leidos en otro diario de este "
+              f"equipo: se copian al de la etapa sin releerlos")
 
     # UNOS POCOS POR CASO, no todos. Leer los 108.562 son veinte horas; leer tres de
     # cada caso son veinte minutos y deja el JSONL puesto en las 855 carpetas. La
@@ -742,8 +778,7 @@ def extraer(args) -> None:
         # subrogado suelto que luego no se puede volver a leer: 20 lineas de la
         # corrida del 24-sep quedaron corruptas asi. Se limpian al escribir, que es
         # donde se sabe que paso; al leer solo se veria una linea rota sin contexto.
-        linea = json.dumps(registro, ensure_ascii=False)
-        linea = linea.encode("utf-8", "replace").decode("utf-8")
+        linea = linea_json(registro)
         with candado, diario_mio.open("a", encoding="utf-8") as diario:
             diario.write(linea + "\n")
         ultimo_registro[threading.get_ident()] = registro
@@ -1009,6 +1044,41 @@ def extraer(args) -> None:
     if subir_activo:
         subir_ahora("al arrancar")           # lo que quedara de la corrida anterior
         threading.Thread(target=subir_cada_hora, daemon=True).start()
+
+    # EL ARMADO DE LOS CASOS, EN ESTA MISMA LECTURA (6-oct). Con --armar-casos <etapa>, cada
+    # equipo arma SOLO SUS CASOS: al arrancar y luego cada hora, el Claude-{ID}.jsonl de cada
+    # caso suyo que ya este completo, subido a Documentos/JSONL/Casos_<equipo>/. El equipo
+    # sale del nombre de la lista (lista_casos2022_gpu2.txt -> gpu2). Va en segundo plano y
+    # NUNCA para la lectura: si falla, se apunta y se reintenta a la hora siguiente. La logica
+    # esta en armar_casos.py, al lado de este fichero.
+    if args.armar_casos and desde_matters:
+        equipo_armado = Path(args.lista).stem.rsplit("_", 1)[-1] if args.lista else None
+
+        def armar_en_fondo() -> None:
+            import sys as _sys
+            if str(Path(__file__).resolve().parent) not in _sys.path:
+                _sys.path.insert(0, str(Path(__file__).resolve().parent))
+            try:
+                if not equipo_armado:
+                    raise ValueError("--armar-casos necesita --lista lista_<etapa>_<equipo>.txt")
+                import armar_casos
+                armador = armar_casos.Armador(args.armar_casos, g, drive, equipo_armado,
+                                              carpeta=SALIDA_DIR / f"etapa_{args.armar_casos}",
+                                              arbol=SALIDA_DIR / "arbol_matters.jsonl",
+                                              diarios_locales=SALIDA_DIR, apuntar=apuntar)
+            except Exception as error:  # noqa: BLE001
+                apuntar(f"ARMADO NO ARRANCA: {type(error).__name__}: {str(error)[:160]}", en_pantalla=True)
+                return
+            while True:
+                try:
+                    armador.vuelta()
+                except Exception as error:  # noqa: BLE001 - el armado nunca para la lectura
+                    apuntar(f"ARMADO FALLIDO: {type(error).__name__}: {str(error)[:160]} | se reintenta "
+                            "en la proxima hora", en_pantalla=True)
+                if fin_de_subida.wait(SUBIDA_CADA_MIN * 60):
+                    return
+
+        threading.Thread(target=armar_en_fondo, daemon=True).start()
     try:
         with ThreadPoolExecutor(max_workers=args.hilos) as piscina:
             for n, _ in enumerate(piscina.map(uno, pendientes), 1):
@@ -1096,7 +1166,7 @@ def subir(args) -> None:
     ultima: dict = {}
     ilegibles = sin_caso = con_caso = 0
     for linea in (l for d in diarios
-                  for l in d.read_text(encoding="utf-8", errors="replace").splitlines()):
+                  for l in d.read_text(encoding="utf-8", errors="replace").split("\n")):
         if not linea.strip():
             continue
         try:
@@ -1392,7 +1462,7 @@ def armar(caso: str, fichas: list[dict], total_del_caso: int | None = None,
                  "unmasked - contains document contents verbatim, including any "
                  "personal data they carry."),
     }
-    return "\n".join(json.dumps(o, ensure_ascii=False)
+    return "\n".join(linea_json(o)
                      for o in [cabecera, *limpias]) + "\n"
 
 
@@ -1511,6 +1581,9 @@ def main() -> None:
     p.add_argument("--sin-subir", action="store_true",
                    help="No subir el diario ni la bitacora a Documentos/JSONL de SharePoint "
                         f"(por defecto se suben cada {SUBIDA_CADA_MIN} minutos)")
+    p.add_argument("--armar-casos", default=None, metavar="ETAPA",
+                   help="Ademas de leer, arma cada hora el Claude-{ID}.jsonl de cada caso COMPLETO de "
+                        "este equipo (el de la lista) y lo sube a Documentos/JSONL/Casos_<equipo>/")
     p.add_argument("--lista", default=None,
                    help="Fichero con ids de archivo (uno por linea): solo se leen esos. "
                         "Ej.: codigo\\salida\\ids_2022_en_adelante.txt")

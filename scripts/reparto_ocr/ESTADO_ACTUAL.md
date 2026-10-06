@@ -2,7 +2,11 @@
 
 **Actualizado: 6-oct-2026.** Si cambias el reparto, cambia también este documento.
 
-> **AHORA MISMO (desde el 6-oct): etapa 2022.** Los 3 equipos con GPU leen **primero** los
+> **AHORA MISMO (desde el 6-oct): etapa 2022, repartida POR CASOS** (`lista_casos2022_<equipo>.txt`;
+> ver «Reparto por casos» en ETAPAS.md). Cada equipo arma y sube cada hora (con --armar-casos 2022) los
+> `Claude-{ID}.jsonl` de SUS casos completos a `Documentos/JSONL/Casos_<equipo>/`.
+>
+> Antes era así: Los 3 equipos con GPU leen **primero** los
 > expedientes con índice de 2022 en adelante, cada uno con su lista
 > (`lista_2022_rafael.txt`, `lista_2022_gpu2.txt`, `lista_2022_gpu3.txt`). Lo hacen en
 > lectura completa con `--lista` y escriben en `textos_matters.lista_2022_<equipo>.jsonl`.
