@@ -272,7 +272,12 @@ def _como_arreglo(imagen):
     import numpy as np
 
     arreglo = np.array(imagen.convert("RGB"))
-    return arreglo[:, :, ::-1]
+    # CONTIGUO, NO UNA VISTA (7-oct). arreglo[:, :, ::-1] es una vista con el paso
+    # negativo, y Paddle recorta cada linea de texto con cv2.warpPerspective sobre la
+    # pagina entera: OpenCV no acepta esa vista y copia la pagina (24 MB a 300 DPI) EN
+    # CADA LINEA. Medido en el servidor: el 90% del tiempo de OCR; 2,93 s por pagina
+    # antes y 0,32 s despues, con el mismo texto.
+    return np.ascontiguousarray(arreglo[:, :, ::-1])
 
 
 def _fragmentos(salida) -> list[tuple[float, float, str, float]]:

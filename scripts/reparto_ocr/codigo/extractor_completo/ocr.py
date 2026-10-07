@@ -135,6 +135,10 @@ def _avanzo(pagina: int, total: int) -> None:
 # Por debajo de 150 Tesseract empieza a confundir letras en los escaneos de fax del
 # despacho; por encima de 300 si tarda el doble y no acierta mas.
 DPI = 300
+# Tope de pixeles de una pagina renderizada: 89,5 millones es donde PIL empieza a
+# avisar de 'decompression bomb'. Una carta a 300 DPI son 8,4 millones; esto solo
+# toca planos y escaneos gigantes, que se renderizan a menos DPI en vez de fallar.
+LIMITE_PIXELES = 89_478_485
 
 # Idiomas. El 'rus' esta porque una parte de la clientela del despacho es
 # rusoparlante y sus documentos vienen en cirilico; si el paquete no esta instalado
@@ -662,8 +666,20 @@ def texto_de_pdf(datos: bytes, paginas: int) -> tuple[str, str, str]:
             tope = min(tope, len(documento))
             _avanzo(0, tope)
             for numero, pagina in enumerate(documento[:tope], 1):
-                pixeles = pagina.get_pixmap(dpi=DPI)
-                with Image.open(io.BytesIO(pixeles.tobytes("png"))) as imagen:
+                # LA PAGINA VA DIRECTA A PIL, SIN PASAR POR PNG (7-oct). Codificar la
+                # pagina en PNG y volver a abrirla costaba 0,54 s por pagina a 300 DPI,
+                # mas que el propio OCR; directa son 0,08 s y la imagen es la misma (PNG
+                # no pierde nada). Y las paginas ENORMES (planos, fotos escaneadas a lo
+                # grande) se bajan de DPI hasta LIMITE_PIXELES: antes Image.open las
+                # rechazaba con DecompressionBombError y el archivo quedaba sin leer.
+                ancho, alto = pagina.rect.width / 72 * DPI, pagina.rect.height / 72 * DPI
+                dpi = DPI if ancho * alto <= LIMITE_PIXELES else max(
+                    36, int(DPI * (LIMITE_PIXELES / (ancho * alto)) ** 0.5))
+                pixeles = pagina.get_pixmap(dpi=dpi, alpha=False)
+                modo = {1: "L", 3: "RGB"}.get(pixeles.n)
+                imagen = (Image.frombytes(modo, (pixeles.width, pixeles.height), pixeles.samples)
+                          if modo else Image.open(io.BytesIO(pixeles.tobytes("png"))))
+                with imagen:
                     # Ya viene a 300 DPI, asi que no hay que ampliarla; lo que si
                     # puede venir es de lado, y eso el OCR no lo arregla solo.
                     trozo, con_que = leer_imagen(imagen, enderezar=True,

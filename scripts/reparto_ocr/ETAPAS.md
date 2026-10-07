@@ -214,22 +214,31 @@ Dos ajustes de Paddle por variable de entorno. Sin ellas, todo queda como siempr
 
 | Variable | Qué hace |
 |---|---|
-| `OCR_GIRO=0` | No endereza la página antes de leerla. Una hoja escaneada de lado se lee peor |
 | `OCR_LADO_MAX=2048` | Lado mayor de la página que entra al detector de texto (Paddle llega a 4.000 px) |
+| `OCR_GIRO=0` | No endereza la página antes de leerla. Una hoja escaneada de lado se lee peor |
 
-Un proceso por trozo de la lista, y solo uno arma:
+**Lo que funciona en la A100 (medido el 7-oct, 10 minutos de lectura real cada prueba):**
+
+| Configuración | Resultado |
+|---|---|
+| 1 proceso, `--hilos 4`, `OCR_LADO_MAX=2048` (giro activado) | **0 errores**, ~85–120 páginas/min |
+| 1 proceso, giro y tamaño completo | 9 errores de CUDA y 3 reinicios en 10 min |
+| 3 o 6 procesos (también con MPS o con otro gestor de memoria de Paddle) | La GPU se rompe en segundos o minutos |
+
+Es decir: **un solo proceso y `OCR_LADO_MAX=2048`**. `OCR_GIRO=0` no hace falta.
 
 ```bash
-for n in 1 2 3 4 5 6; do
-  extra=""; [ $n = 1 ] && extra="--armar-casos 2022"
-  nohup bash -c "export OMP_NUM_THREADS=4 OCR_GIRO=0 OCR_LADO_MAX=2048; while true; do .venv/bin/python codigo/describir_casos.py --extraer --por-caso 0 --paginas 0 --max-mb 0 --hilos 1 --minutos 720 --lista codigo/salida/lista_casos2022p${n}_<equipo>.txt $extra; sleep 5; done" > codigo/salida/pantalla_p$n.txt 2>&1 &
-done
+nohup bash -c "export OMP_NUM_THREADS=8 OCR_LADO_MAX=2048; while true; do .venv/bin/python codigo/describir_casos.py --extraer --por-caso 0 --paginas 0 --max-mb 0 --hilos 4 --minutos 720 --lista codigo/salida/lista_<etapa>_<equipo>.txt --armar-casos <etapa>; sleep 5; done" > codigo/salida/pantalla.txt 2>&1 &
 ```
 
-Los trozos se llaman `lista_<etapa>p<N>_<equipo>.txt`: el equipo sigue saliendo del final
-del nombre, y el armado junta todos los diarios `lista_*` de la carpeta. Los procesos
-siguen corriendo al cerrar SSH; la máquina de Azure cobra mientras esté encendida, aunque
-no lea: al terminar, **Detener** en el portal hasta que diga *desasignada*.
+**Dos arreglos de velocidad (7-oct), que valen para todos los equipos:** la página entra en
+Paddle como memoria contigua (antes OpenCV copiaba la página entera por cada línea de
+texto: 2,93 s por página, ahora 0,32 s) y pasa directa de PyMuPDF a PIL, sin codificarla en
+PNG (0,54 s menos por página). El texto leído es el mismo. Las páginas gigantes se
+renderizan a menos DPI en vez de fallar con `DecompressionBombError`.
+
+Los procesos siguen corriendo al cerrar SSH; la máquina de Azure cobra mientras esté
+encendida, aunque no lea: al terminar, **Detener** en el portal hasta que diga *desasignada*.
 
 ## 3. Al terminar la etapa
 
