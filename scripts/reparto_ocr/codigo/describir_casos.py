@@ -41,6 +41,7 @@ import hashlib
 import json
 import re
 import signal
+import sys
 import threading
 import time
 from collections import Counter, defaultdict, deque
@@ -214,6 +215,34 @@ PAGINAS_EN_BITACORA = 25
 # En la pasada con GPU, los escaneos de mas de esto se dejan para el final. Ver el
 # orden en extraer().
 PESADOS_AL_FINAL = 5
+
+
+def consumo_del_sistema() -> str:
+    """RAM del proceso y del equipo, procesador y GPU, en una linea. Nunca falla.
+
+    Va en cada linea VIVO de la bitacora (6-oct): sirve para saber cuantos procesos caben
+    en una maquina y para ver si alguno se come la memoria con los dias. Sin psutil solo
+    sale la GPU; sin nvidia-smi, solo lo demas.
+    """
+    partes = []
+    try:
+        import psutil
+        vm = psutil.virtual_memory()
+        partes += [f"RAM proceso {psutil.Process().memory_info().rss / 2 ** 30:.1f} GB",
+                   f"RAM equipo {vm.used / 2 ** 30:.0f}/{vm.total / 2 ** 30:.0f} GB",
+                   f"CPU {psutil.cpu_percent(interval=None):.0f}%"]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import subprocess
+        r = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total",
+                            "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip():
+            uso, usada, total = [x.strip() for x in r.stdout.strip().splitlines()[0].split(",")[:3]]
+            partes.append(f"GPU {uso}% {int(usada) / 1024:.1f}/{int(total) / 1024:.0f} GB")
+    except Exception:  # noqa: BLE001
+        pass
+    return " | ".join(partes)
 
 
 def _duracion(segundos: float) -> str:
@@ -685,6 +714,19 @@ def extraer(args) -> None:
         pendientes = primeras + copias
     if copias:
         print(f"  {len(copias):,} son copias de otro: van al final y no se releen")
+    # LOS QUE ROMPIERON LA GPU, AL FINAL (7-oct). Si un archivo deja la GPU inservible,
+    # el proceso se reinicia (ver gpu_rota); puesto el primero otra vez, la romperia en
+    # cada arranque y no se avanzaria nunca. Al final, primero se lee todo lo demas.
+    rastro_gpu = diario_mio.with_name(f"gpu_rota_{diario_mio.stem}.txt")
+    rompieron = {}
+    if rastro_gpu.exists():
+        for i in rastro_gpu.read_text(encoding="utf-8").split():
+            rompieron[i] = rompieron.get(i, 0) + 1
+    if rompieron:
+        al_final = sorted((f for f in pendientes if f.id in rompieron), key=lambda f: rompieron[f.id])
+        if al_final:
+            pendientes = [f for f in pendientes if f.id not in rompieron] + al_final
+            print(f"  {len(al_final):,} dejaron la GPU inservible en otra vuelta: van al final")
     saltados = len(act) - len(pendientes)
     if args.limite:
         pendientes = pendientes[: args.limite]
@@ -760,10 +802,12 @@ def extraer(args) -> None:
         if listo:
             print("  PaddleOCR cargado antes de empezar", flush=True)
             apuntar("PaddleOCR cargado")
-        elif args.solo_ocr:
+        elif args.solo_ocr or args.lista:
+            # CON LISTA TAMBIEN SE PARA (6-oct). Las listas llevan escaneos: sin Paddle, la
+            # GPU 2 se paso 11 minutos marcando 449 'sin texto' en vez de leerlos.
             apuntar(f"PADDLEOCR NO ARRANCA: {por_que}")
-            raise SystemExit(f"\n  PaddleOCR NO ARRANCA: {por_que}\n  En --solo-ocr no hay nada "
-                             "que hacer sin el. Corre comprobar.py y pasale la salida a Rafa.")
+            raise SystemExit(f"\n  PaddleOCR NO ARRANCA: {por_que}\n  Sin el no se puede leer la "
+                             "lista. Reinstala Paddle (ver ETAPAS.md) y pasale este mensaje a Rafa.")
         else:
             print(f"  OJO: PaddleOCR no arranca ({por_que}): los escaneos quedaran sin "
                   "leer y se reintentaran en la proxima corrida.", flush=True)
@@ -783,8 +827,18 @@ def extraer(args) -> None:
             diario.write(linea + "\n")
         ultimo_registro[threading.get_ident()] = registro
 
+    def gpu_rota() -> str | None:
+        modulo = sys.modules.get("extractor_completo.paddle_ocr")
+        return modulo.gpu_rota() if modulo is not None and hasattr(modulo, "gpu_rota") else None
+
+    gpu_avisada: list = []
+
     def uno(f) -> None:
         """_uno con su entrada en la bitacora. Lo que pase dentro no cambia."""
+        # Parando (Ctrl+C o GPU rota): lo que quedaba en la cola se salta sin anotarlo,
+        # y se lee en la proxima corrida. Antes se seguia hasta vaciar la cola.
+        if parar["ahora"] or gpu_rota():
+            return
         yo = threading.get_ident()
         en_curso[yo] = {"nombre": str(f.name), "mb": f.size / 2 ** 20,
                         "desde": time.time(), "pagina": 0, "paginas": 0}
@@ -806,6 +860,14 @@ def extraer(args) -> None:
                         f"{r.get('extracted_text_length') or 0:,} caracteres en {tardo}")
             else:
                 apuntar(f"NO LEIDO {nombre}: {str(r.get('not_read_because'))[:90]} ({tardo})")
+                if r is not None and "CUDA error" in str(r.get("not_read_because")):
+                    with candado:
+                        if not gpu_avisada:
+                            gpu_avisada.append(f.id)
+                            with rastro_gpu.open("a", encoding="utf-8") as fh:
+                                fh.write(f.id + chr(10))
+                            apuntar(f"GPU ROTA en {nombre}: se termina y el proceso se reinicia; "
+                                    "ese archivo pasa al final", en_pantalla=True)
             with candado_bitacora:
                 terminados_a_las.append(time.time())
                 cuenta_total[0] += 1
@@ -974,11 +1036,16 @@ def extraer(args) -> None:
                           if yo.get("paginas") else "")
                 trabajando.append(f"{yo['nombre'][:45]} (hace "
                                   f"{_duracion(ahora - yo['desde'])}{pagina})")
+            consumo = consumo_del_sistema()
             apuntar(f"VIVO  {cuenta_total[0]:,} de {len(pendientes):,} en esta sesion | "
                     f"{ultima_hora} en la ultima hora | "
-                    + ("; ".join(trabajando) if trabajando else "entre archivos"),
+                    + ("; ".join(trabajando) if trabajando else "entre archivos")
+                    + (f" || {consumo}" if consumo else ""),
                     en_pantalla=True)
 
+    consumo_al_empezar = consumo_del_sistema()
+    if consumo_al_empezar:
+        apuntar(f"CONSUMO al empezar: {consumo_al_empezar}")
     threading.Thread(target=latir, daemon=True).start()
 
     # LA SUBIDA CADA HORA (6-oct): lo NUEVO del diario, como un trozo con su hora, y la
@@ -1052,7 +1119,11 @@ def extraer(args) -> None:
     # NUNCA para la lectura: si falla, se apunta y se reintenta a la hora siguiente. La logica
     # esta en armar_casos.py, al lado de este fichero.
     if args.armar_casos and desde_matters:
-        equipo_armado = Path(args.lista).stem.rsplit("_", 1)[-1] if args.lista else None
+        # El equipo sale del nombre de la lista (lista_casos2022_gpu2.txt -> gpu2), salvo que
+        # se diga: --armar-casos 2022:rafael. Hace falta cuando varios procesos de una misma
+        # maquina leen trozos de los casos de un equipo y solo UNO de ellos arma.
+        etapa_armado, _, equipo_dicho = args.armar_casos.partition(":")
+        equipo_armado = equipo_dicho or (Path(args.lista).stem.rsplit("_", 1)[-1] if args.lista else None)
 
         def armar_en_fondo() -> None:
             import sys as _sys
@@ -1062,8 +1133,8 @@ def extraer(args) -> None:
                 if not equipo_armado:
                     raise ValueError("--armar-casos necesita --lista lista_<etapa>_<equipo>.txt")
                 import armar_casos
-                armador = armar_casos.Armador(args.armar_casos, g, drive, equipo_armado,
-                                              carpeta=SALIDA_DIR / f"etapa_{args.armar_casos}",
+                armador = armar_casos.Armador(etapa_armado, g, drive, equipo_armado,
+                                              carpeta=SALIDA_DIR / f"etapa_{etapa_armado}",
                                               arbol=SALIDA_DIR / "arbol_matters.jsonl",
                                               diarios_locales=SALIDA_DIR, apuntar=apuntar)
             except Exception as error:  # noqa: BLE001
@@ -1083,7 +1154,7 @@ def extraer(args) -> None:
         with ThreadPoolExecutor(max_workers=args.hilos) as piscina:
             for n, _ in enumerate(piscina.map(uno, pendientes), 1):
                 hechos_ahora = n
-                if parar["ahora"]:
+                if parar["ahora"] or gpu_rota():
                     break
                 if args.minutos and (time.time() - arranque) / 60 >= args.minutos:
                     print(f"\n  se cumplieron los {args.minutos} minutos: se para "
@@ -1101,6 +1172,7 @@ def extraer(args) -> None:
         fin_del_latido.set()
         avisar_paginas(None)
         como = ("PARADO con Ctrl+C" if parar["ahora"]
+                else "REINICIO POR GPU ROTA" if gpu_rota()
                 else "TERMINADO" if hechos_ahora >= len(pendientes) else "PARADO")
         apuntar(f"FIN  {como}: {hechos_ahora:,} de {len(pendientes):,} en "
                 f"{_duracion(time.time() - arranque)} | "
@@ -1581,9 +1653,10 @@ def main() -> None:
     p.add_argument("--sin-subir", action="store_true",
                    help="No subir el diario ni la bitacora a Documentos/JSONL de SharePoint "
                         f"(por defecto se suben cada {SUBIDA_CADA_MIN} minutos)")
-    p.add_argument("--armar-casos", default=None, metavar="ETAPA",
+    p.add_argument("--armar-casos", default=None, metavar="ETAPA[:EQUIPO]",
                    help="Ademas de leer, arma cada hora el Claude-{ID}.jsonl de cada caso COMPLETO de "
-                        "este equipo (el de la lista) y lo sube a Documentos/JSONL/Casos_<equipo>/")
+                        "este equipo (el de la lista, o el de ':EQUIPO') y lo sube a "
+                        "Documentos/JSONL/Casos_<equipo>/. Varios procesos de un equipo: solo uno arma")
     p.add_argument("--lista", default=None,
                    help="Fichero con ids de archivo (uno por linea): solo se leen esos. "
                         "Ej.: codigo\\salida\\ids_2022_en_adelante.txt")

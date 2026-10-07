@@ -193,6 +193,40 @@ Para probar el armado sin subir nada, desde la carpeta que contiene `codigo\`:
 al arrancar copia su ficha al diario de la etapa, para que se suba y su caso se pueda
 armar.
 
+## Leer en un servidor Linux con GPU (7-oct)
+
+Probado en Azure (NC24ads A100 v4, Ubuntu 22.04). Con **varios procesos de Paddle en la
+misma GPU**, de vez en cuando uno da `CUDA error(700), an illegal memory access` o
+`CUDA error(716), misaligned address`, y desde ese momento ese proceso no puede volver a
+usar la GPU. Lo que hace el lector:
+
+- Al primer error de CUDA, el proceso **termina, sube su diario y sale**. El bucle
+  `while true` lo relanza con la GPU limpia (Paddle carga en ~5 s). En la bitácora:
+  `GPU ROTA en <archivo>` y `FIN REINICIO POR GPU ROTA`.
+- El archivo que la rompió pasa **al final** de la cola en los siguientes arranques
+  (`codigo/salida/gpu_rota_<diario>.txt`).
+
+Dos ajustes de Paddle por variable de entorno. Sin ellas, todo queda como siempre:
+
+| Variable | Qué hace |
+|---|---|
+| `OCR_GIRO=0` | No endereza la página antes de leerla. Una hoja escaneada de lado se lee peor |
+| `OCR_LADO_MAX=2048` | Lado mayor de la página que entra al detector de texto (Paddle llega a 4.000 px) |
+
+Un proceso por trozo de la lista, y solo uno arma:
+
+```bash
+for n in 1 2 3 4 5 6; do
+  extra=""; [ $n = 1 ] && extra="--armar-casos 2022"
+  nohup bash -c "export OMP_NUM_THREADS=4 OCR_GIRO=0 OCR_LADO_MAX=2048; while true; do .venv/bin/python codigo/describir_casos.py --extraer --por-caso 0 --paginas 0 --max-mb 0 --hilos 1 --minutos 720 --lista codigo/salida/lista_casos2022p${n}_<equipo>.txt $extra; sleep 5; done" > codigo/salida/pantalla_p$n.txt 2>&1 &
+done
+```
+
+Los trozos se llaman `lista_<etapa>p<N>_<equipo>.txt`: el equipo sigue saliendo del final
+del nombre, y el armado junta todos los diarios `lista_*` de la carpeta. Los procesos
+siguen corriendo al cerrar SSH; la máquina de Azure cobra mientras esté encendida, aunque
+no lea: al terminar, **Detener** en el portal hasta que diga *desasignada*.
+
 ## 3. Al terminar la etapa
 
 Se vuelve a la lectura de fondo quitando `--lista` (con la línea de `ESTADO_ACTUAL.md`). No se
