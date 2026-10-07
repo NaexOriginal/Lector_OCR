@@ -941,7 +941,15 @@ def extraer(args) -> None:
                     cuenta["sin bajar"] += 1
                 return
             empezar_archivo()
+            rota_antes = gpu_rota()
             texto, fallo, con_que = leer_con_detalle(extension, datos, paginas)
+            # LA GPU SE ROMPIO A MITAD DE ESTE ARCHIVO (7-oct): las paginas de antes se
+            # leyeron y las de despues fallaron una a una, asi que el archivo salia LEIDO
+            # con parte del texto ('Notice of motion for SJ', 277 paginas: 16.427
+            # caracteres). Se anota como fallo del motor, que no es definitivo: se relee.
+            rota = gpu_rota()
+            if rota and not rota_antes:
+                texto, fallo = "", f"PaddleOCR failed (GPU rota durante este archivo: {rota})"
         except Exception as error:  # noqa: BLE001
             anotar({**ficha, "was_read": False, "read_with": None,
                     "not_read_because": f"{type(error).__name__}: {error}"[:80]})

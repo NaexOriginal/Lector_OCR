@@ -205,6 +205,10 @@ usar la GPU. Lo que hace el lector:
   `GPU ROTA en <archivo>` y `FIN REINICIO POR GPU ROTA`.
 - El archivo que la rompió pasa **al final** de la cola en los siguientes arranques
   (`codigo/salida/gpu_rota_<diario>.txt`).
+- Si se rompe a mitad de un archivo, ese archivo queda como fallo del motor y se relee:
+  antes quedaba LEIDO con solo las páginas de antes del error. Lo que se guardó así se
+  limpia, con la lectura parada, con `python reparar_lecturas_partidas.py --equipo <equipo>`
+  (primero sin nada más, para ver qué haría; luego con `--aplicar`).
 
 Dos ajustes de Paddle por variable de entorno. Sin ellas, todo queda como siempre:
 
