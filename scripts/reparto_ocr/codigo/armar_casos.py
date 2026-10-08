@@ -265,6 +265,101 @@ class Armador:
         self.registro.write_text(json.dumps(hechos, ensure_ascii=False, indent=1), encoding="utf-8")
         self.apuntar(f"SUBIDO {ruta}: {len(fichas)} archivos, {len(crudo) / 2 ** 20:.2f} MB  <- {e}")
 
+    def aparte(self) -> None:
+        """LOS CASOS QUE NO SE PUEDEN SUBIR NORMALES, A CARPETAS APARTE (8-oct).
+
+        Al terminar la lectura de una etapa quedan tres clases de casos que el armado normal
+        no sube, a proposito: (1) completos, pero en SharePoint cambiaron desde el listado de
+        la etapa; (2) incompletos porque algun archivo no se puede leer nunca (ZIP con
+        contrasena, borrado, PDF danado); (3) su carpeta ya no existe con ese nombre en
+        Matters. Para tener ya su texto, se suben a Casos_<equipo>_cambiados/,
+        _incompletos/ y _sin_carpeta/, con un 'aviso' en la cabecera que dice que falta.
+        Los archivos no leidos van como ficha sin texto y con el motivo. No toca el
+        registro normal: cuando el caso se complete, el armado normal lo subira a
+        Casos_<equipo>/ como siempre, y estas carpetas se pueden borrar.
+        """
+        for f in sorted(self.diarios_locales.glob("textos_matters.lista_*.jsonl")):
+            self._indexar(f)
+        hash_leido = {v[2] for v in self.estado.values() if v[1] and v[2]}
+        original_de = {}
+        for i, v in self.estado.items():
+            if v[1] and v[2]:
+                original_de.setdefault(v[2], i)
+
+        def resuelto(i: str) -> bool:
+            e, h = self.estado.get(i), self.meta[i].get("hash")
+            return bool(e and e[0]) or bool(h and h in hash_leido)
+
+        hechos = json.loads(self.registro.read_text(encoding="utf-8")) if self.registro.exists() else {}
+        pendientes = [e for e in sorted(self.arbol) if hechos.get(e, {}).get("estado") != "subido"]
+        hoy = {}
+        url = f"{GRAPH}/drives/{self.drive}/root:/{CARPETA_DESTINO}:/children?$select=id,name&$top=999"
+        while url:
+            r = self._get(url)
+            hoy.update({x["name"]: x["id"] for x in r.get("value", [])})
+            url = r.get("@odata.nextLink")
+        registro = self.carpeta / f"casos_aparte_{self.etapa}_{self.equipo}.json"
+        aparte = json.loads(registro.read_text(encoding="utf-8")) if registro.exists() else {}
+        for e in pendientes:
+            ids = self.arbol[e]
+            sin_leer = [i for i in ids if not resuelto(i)]
+            carpeta_id = hoy.get(e)
+            avisos = []
+            if not carpeta_id:
+                tipo = "sin_carpeta"
+                avisos.append("La carpeta del caso ya no existe con este nombre en Matters (renombrada o "
+                              f"borrada). Lo leido es del listado de la etapa {self.etapa}.")
+            else:
+                vivos = self._vivos(carpeta_id)
+                nuevos, quitados = len(vivos - set(ids)), len(set(ids) - vivos)
+                tipo = "incompletos" if sin_leer else "cambiados"
+                if nuevos or quitados:
+                    avisos.append(f"Desde el listado de la etapa, en SharePoint hay {nuevos} archivos nuevos "
+                                  f"que no estan en este JSONL y {quitados} que ya no estan alli.")
+                elif not sin_leer:
+                    self.apuntar(f"APARTE: {e} esta completo y sin cambios: lo sube el armado normal")
+                    continue
+            if sin_leer:
+                avisos.append(f"{len(sin_leer)} archivos no se pudieron leer: van como ficha sin texto, "
+                              "con el motivo en 'not_read_because'.")
+            fichas = []
+            for i in ids:
+                v, m = self.estado.get(i), self.meta[i]
+                sub = m.get("sub") or ""
+                base = {"id": i, "caso": e, "file_name": m["name"],
+                        "subfolder": sub.rsplit("/", 1)[0] if "/" in sub else "(folder root)",
+                        "size_mb": round(m["size"] / 2 ** 20, 2), "hash": m.get("hash")}
+                if v and v[0]:
+                    fichas.append({**self._ficha(i), "id": i, "caso": e})
+                elif m.get("hash") in original_de:
+                    orig = self._ficha(original_de[m["hash"]])
+                    fichas.append({**base, **{k: orig.get(k) for k in CAMPOS_DE_LECTURA},
+                                   "copied_from": orig.get("id")})
+                elif v:
+                    fichas.append({**self._ficha(i), "id": i, "caso": e})
+                else:
+                    fichas.append({**base, "was_read": False, "read_with": None,
+                                   "not_read_because": "not read in this stage"})
+            texto = armar(e, fichas, len(ids), carpeta_id)
+            cabecera, resto = texto.split("\n", 1)
+            texto = linea_json({**json.loads(cabecera), "aviso": " ".join(avisos)}) + "\n" + resto
+            crudo = texto.encode("utf-8")
+            ident = _id_interno(e) or "sin-id"
+            nombre = (f"Claude-{ident}_{e.rsplit(' - ', 1)[-1].strip().replace('/', '-')}.jsonl"
+                      if ident in self.repetidos else f"Claude-{ident}.jsonl")
+            ruta = f"{SUBIDA_CARPETA}/Casos_{self.equipo}_{tipo}/{nombre}"
+            if self.simular:
+                destino = self.carpeta / "simulados" / f"Casos_{self.equipo}_{tipo}"
+                destino.mkdir(parents=True, exist_ok=True)
+                (destino / nombre).write_bytes(crudo)
+                self.apuntar(f"SIMULADO {ruta}: {len(fichas)} archivos, {len(sin_leer)} sin leer  <- {e}")
+                continue
+            subir_a_sharepoint(self.g, self.drive, ruta, crudo)
+            aparte[e] = {"tipo": tipo, "jsonl": ruta, "sin_leer": len(sin_leer), "aviso": " ".join(avisos),
+                         "cuando": f"{datetime.now():%Y-%m-%d %H:%M}"}
+            registro.write_text(json.dumps(aparte, ensure_ascii=False, indent=1), encoding="utf-8")
+            self.apuntar(f"SUBIDO APARTE {ruta}: {len(fichas)} archivos, {len(sin_leer)} sin leer  <- {e}")
+
 
 def preparar_bases(etapa: str, reparto_csv: Path, arbol: Path, fuentes: list[Path], salida: Path) -> None:
     """Parte lo ya leido en una base por equipo: las fichas de SUS casos y los ORIGINALES de las
@@ -330,6 +425,9 @@ def main() -> None:
     p.add_argument("--equipo", help="rafael, gpu2 o gpu3")
     p.add_argument("--simular", action="store_true", help="No sube: escribe los JSONL en local")
     p.add_argument("--una-vez", action="store_true", help="Una vuelta y termina")
+    p.add_argument("--aparte", action="store_true",
+                   help="Al terminar la etapa: sube los casos cambiados, incompletos o sin carpeta a "
+                        "Casos_<equipo>_cambiados/, _incompletos/ y _sin_carpeta/, con un aviso")
     p.add_argument("--cada", type=int, default=60, help="Minutos entre vueltas (por defecto 60)")
     p.add_argument("--preparar-bases", action="store_true", help="Solo Rafael: partir lo leido por equipo")
     p.add_argument("--fuentes", type=Path, nargs="*", default=[],
@@ -346,6 +444,9 @@ def main() -> None:
     from copiar_a_matters import destino
     g = Graph()
     armador = Armador(args.etapa, g, destino(g)[0], args.equipo, simular=args.simular)
+    if args.aparte:
+        armador.aparte()
+        return
     while True:
         try:
             armador.vuelta()

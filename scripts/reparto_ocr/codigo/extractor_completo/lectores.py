@@ -91,6 +91,12 @@ class LectorPDF(Lector):
         y un reporte de credito con fuentes sin mapa de caracteres se daba por
         leido con indices de glifo. El OCR no llegaba a dispararse nunca.
         """
+        # UN PDF CON CONTRASENA NO ESTA VACIO (8-oct). pypdf y PyMuPDF no sacaban nada,
+        # el OCR rasterizaba paginas en blanco y salia 'OCR got no text: unreadable':
+        # 18 producciones de Experian de 88 a 285 paginas pasaban por vacias.
+        datos, cerrado = _quitar_clave_pdf(datos)
+        if cerrado:
+            return "", cerrado, ""
         leidas = paginas
         try:
             lector = pypdf.PdfReader(io.BytesIO(datos))
@@ -533,6 +539,12 @@ CLAVE_ETIQUETADA = re.compile(
     r"[\"'“]?([^\s\"'”]{4,60})", re.I)
 
 
+# La clave en el NOMBRE del archivo: 'Password - Xk29a.txt', 'pwd_Xk29a.docx'. Pasa:
+# el archivo de clave de algunas carpetas esta vacio y lo unico que dice es su nombre.
+CLAVE_EN_NOMBRE = re.compile(
+    r"(?:passwords?|passcodes?|pass|pwd|clave|contrase\w*)[\s_\-:=]+([^\s]{4,60})", re.I)
+
+
 def claves_en_texto(texto: str) -> list[str]:
     """Las contrasenas que parece contener un archivo, de la mas fiable a la menos.
 
@@ -557,6 +569,29 @@ def claves_en_texto(texto: str) -> list[str]:
 
 def parece_archivo_de_clave(nombre: str) -> bool:
     return bool(ARCHIVO_DE_CLAVE.search(str(nombre)))
+
+
+def _quitar_clave_pdf(datos: bytes) -> tuple[bytes, str]:
+    """El PDF sin cifrar y '' si se puede abrir; si pide una clave que no tenemos,
+    los mismos bytes y el motivo. Prueba las de CONTRASENAS, como el zip."""
+    modulo = ocr._pymupdf()
+    if modulo is None:
+        return datos, ""
+    try:
+        doc = modulo.open(stream=datos, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return datos, ""  # que lo intenten los escalones de siempre
+    try:
+        if not doc.needs_pass:
+            return datos, ""
+        for clave in CONTRASENAS:
+            if doc.authenticate(clave.decode("utf-8", "ignore")):
+                return doc.tobytes(encryption=modulo.PDF_ENCRYPT_NONE), ""
+        probadas = (f"{len(CONTRASENAS)} password(s) were tried" if CONTRASENAS
+                    else "no password was given")
+        return datos, f"the PDF is password protected ({probadas}): pass one with --password"
+    finally:
+        doc.close()
 
 
 class LectorZIP(Lector):

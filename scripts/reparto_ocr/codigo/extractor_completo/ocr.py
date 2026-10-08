@@ -693,7 +693,10 @@ def texto_de_pdf(datos: bytes, paginas: int) -> tuple[str, str, str]:
 
     texto = "\n".join(partes)
     if not texto.strip():
-        return "", _sin_texto("OCR got no text: unreadable"), ""
+        # Frase nueva (8-oct) y no 'OCR got no text: unreadable': con la vieja salian
+        # tambien los PDF con contrasena, que ya se detectan antes. Asi lo leido con la
+        # vieja se relee una vez y lo leido con la nueva es definitivo (es_definitiva).
+        return "", _sin_texto("OCR found no text on the pages"), ""
     if parece_ruido(texto):
         return "", "OCR returned noise, not words: the pages have no readable text", ""
     # En 'auto' unas paginas las puede leer uno y otras el otro, y eso hay que

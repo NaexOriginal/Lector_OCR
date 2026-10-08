@@ -55,7 +55,8 @@ import pandas as pd
 from clasificacion import tipo_de_texto
 from copiar_a_matters import CARPETA_DESTINO, destino as destino_nuevo
 from extraccion.config import drive_id
-from extractor_completo.lectores import leer_con_detalle, topar_ocr
+from extractor_completo.lectores import (CLAVE_EN_NOMBRE, CONTRASENAS, claves_en_texto,
+                                         leer_con_detalle, parece_archivo_de_clave, topar_ocr)
 from extractor_completo.ocr import (NECESITA_OCR, avisar_paginas, diferir, empezar_archivo,
                                     se_difirio)
 from sp_conexion import Graph
@@ -121,7 +122,13 @@ VERSION_MINIMA = 3        # por debajo de esta, se relee todo
 # escrito tres veces, una por funcion, y cada copia podia quedarse atras.
 # 'not a document': los '._' del Mac y el codigo de las paginas web guardadas
 # ('.js.download'); lo devuelve extractor_completo.lectores con esa frase.
-PERMANENTES = ("larger than", "no reader for", "not a document")
+# 'empty file': 0 bytes en SharePoint. Salian "sin bajar" sin motivo y se reintentaban
+# en cada vuelta para siempre (8-oct: 57 archivos, la mitad de los casos incompletos).
+# 'password protected': decision de Rafael (8-oct). Antes de anotarlo se prueban las
+# claves de los archivos de contrasena de la misma carpeta; si ninguna abre, se deja
+# dicho y no se reintenta. Con --password se vuelven a intentar (ver extraer).
+PERMANENTES = ("larger than", "no reader for", "not a document", "empty file",
+               "password protected")
 
 # UNA IMAGEN SIN TEXTO ES DEFINITIVA SI EL MOTOR FUNCIONO. Las fotos sin letras
 # (logos, paisajes, 3 caracteres sueltos) salian "sin texto" y, como ese motivo no
@@ -131,8 +138,12 @@ PERMANENTES = ("larger than", "no reader for", "not a document")
 # encontrar manana. Si fue un error del motor (el oneDNN del 29-sep, el import
 # roto), ocr_ok no esta y se sigue reintentando. Las fichas viejas no lo llevan:
 # se reintentan una ultima vez y desde ahi quedan cerradas.
+# Lo mismo con los PDF y los Word sin texto (8-oct, revisados a mano: paginas en
+# blanco, fotos). 'OCR found no text on the pages' es la frase NUEVA: la vieja ('OCR
+# got no text') tambien la llevaban los PDF con contrasena, asi que esos se releen.
 SIN_TEXTO_DE_VERDAD = ("OCR found no text in the image", "OCR returned only",
-                       "OCR returned noise")
+                       "OCR returned noise", "OCR found no text on the pages",
+                       "the Word file has no text and its images have none either")
 
 
 def es_definitiva(ficha: dict) -> bool:
@@ -522,6 +533,16 @@ def extraer(args) -> None:
         con_reparto = {r[0].split("/")[3] for r in reparto if len(r[0].split("/")) > 3}
         act = act[act["Carpeta"].isin(set(casos_origen) | con_reparto | set(del_plan))]
 
+    # LOS ARCHIVOS DE CONTRASENA DE CADA CARPETA (8-oct), del arbol entero y no solo
+    # de la lista: la produccion cifrada y su clave estan en la misma carpeta. Solo los
+    # pequenos: una clave no viene en un archivo de 5 MB.
+    claves_en_carpeta: dict[tuple, list] = {}
+    if desde_matters:
+        for i, nombre, carpeta, sub, peso in act[["id", "name", "Carpeta", "sub", "size"]].itertuples(index=False):
+            if parece_archivo_de_clave(nombre) and (peso or 0) < 5 * 2 ** 20:
+                sitio = (carpeta, sub if isinstance(sub, str) else "")
+                claves_en_carpeta.setdefault(sitio, []).append((i, str(nombre)))
+
     # SOLO LOS ARCHIVOS DE UNA LISTA (6-oct). Para leer primero un grupo de casos -- los
     # de 2022 en adelante -- sin cambiar el reparto: cada equipo sigue con sus trozos y
     # de ellos lee solo lo que esta en la lista. Va por ID DE ARCHIVO y no por nombre de
@@ -591,6 +612,9 @@ def extraer(args) -> None:
             motivo = str(ficha.get("not_read_because") or "")
             if args.origen == "matters" and hay_que_releer(ficha):
                 transitorios += 1     # leido con lectores viejos: se relee
+                continue
+            if args.password and "password protected" in motivo:
+                transitorios += 1     # hay claves nuevas: se vuelve a intentar
                 continue
             if en_lista and ficha.get("id") in en_lista:
                 if es_el_mio:
@@ -816,6 +840,32 @@ def extraer(args) -> None:
     drive = destino_nuevo(g)[0] if desde_matters else drive_id()
     candado = threading.Lock()
     cuenta, arranque = Counter(), time.time()
+    claves_vistas: dict[tuple, list[str]] = {}
+
+    def claves_de_la_carpeta(f) -> list[str]:
+        """Las claves que dicen los archivos de contrasena de la carpeta de f: en su
+        nombre o dentro. Una vez por carpeta. Las claves NO se escriben en ningun log."""
+        sitio = (f.Carpeta, f.sub if isinstance(f.sub, str) else "")
+        with candado:
+            if sitio in claves_vistas:
+                return claves_vistas[sitio]
+        halladas: list[str] = []
+        for i, nombre in claves_en_carpeta.get(sitio, []):
+            if i == f.id:
+                continue
+            raiz = nombre.rsplit(".", 1)[0]
+            halladas += CLAVE_EN_NOMBRE.findall(raiz) + claves_en_texto(raiz)
+            try:
+                datos, _ = bajar(g, drive, i)
+                if datos:
+                    ext = nombre.rsplit(".", 1)[-1].lower() if "." in nombre else ""
+                    halladas += claves_en_texto(leer_con_detalle(ext, datos, 0)[0])
+            except Exception:  # noqa: BLE001
+                pass    # si no se puede leer el archivo de la clave, queda su nombre
+        halladas = list(dict.fromkeys(h for h in halladas if h))
+        with candado:
+            claves_vistas[sitio] = halladas
+        return halladas
 
     def anotar(registro: dict) -> None:
         # ensure_ascii=False escribe el texto tal cual, y el OCR puede devolver un
@@ -932,6 +982,12 @@ def extraer(args) -> None:
             with candado:
                 cuenta["saltado"] += 1
             return
+        if not f.size:
+            anotar({**ficha, "was_read": False, "read_with": None,
+                    "not_read_because": "empty file (0 bytes)"})
+            with candado:
+                cuenta["vacio (0 bytes)"] += 1
+            return
         try:
             datos, motivo = bajar(g, drive, f.id)
             if not datos:
@@ -943,6 +999,17 @@ def extraer(args) -> None:
             empezar_archivo()
             rota_antes = gpu_rota()
             texto, fallo, con_que = leer_con_detalle(extension, datos, paginas)
+            # CIFRADO: se prueban las claves de los archivos de contrasena de su carpeta.
+            # Si una abre, se lee entero; si no, queda 'password protected' y no se insiste.
+            if desde_matters and "password protected" in str(fallo or ""):
+                nuevas = [c.encode("utf-8") for c in claves_de_la_carpeta(f)]
+                with candado:
+                    nuevas = [c for c in nuevas if c not in CONTRASENAS]
+                    CONTRASENAS.extend(nuevas)
+                if nuevas:
+                    texto, fallo, con_que = leer_con_detalle(extension, datos, paginas)
+                    if texto.strip():
+                        con_que = f"{con_que} (password from a file in its folder)"
             # LA GPU SE ROMPIO A MITAD DE ESTE ARCHIVO (7-oct): las paginas de antes se
             # leyeron y las de despues fallaron una a una, asi que el archivo salia LEIDO
             # con parte del texto ('Notice of motion for SJ', 277 paginas: 16.427
@@ -1673,7 +1740,14 @@ def main() -> None:
                         f"(por defecto {PESADOS_AL_FINAL:g}; 0 = sin separar)")
     p.add_argument("--enmascarar-ssn", action="store_true",
                    help="Sustituye los SSN por XXX-XX-nnnn (por defecto van en claro)")
+    p.add_argument("--password", action="append", default=[], metavar="CLAVE",
+                   help="Contrasena para PDF y zip cifrados; se puede repetir. Se prueban "
+                        "todas contra cada archivo cifrado")
     args = p.parse_args()
+
+    if args.password:
+        from extractor_completo import lectores
+        lectores.CONTRASENAS.extend(c.encode("utf-8") for c in args.password)
 
     if args.extraer:
         extraer(args)
