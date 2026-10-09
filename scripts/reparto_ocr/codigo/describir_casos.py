@@ -128,7 +128,7 @@ VERSION_MINIMA = 3        # por debajo de esta, se relee todo
 # claves de los archivos de contrasena de la misma carpeta; si ninguna abre, se deja
 # dicho y no se reintenta. Con --password se vuelven a intentar (ver extraer).
 PERMANENTES = ("larger than", "no reader for", "not a document", "empty file",
-               "password protected")
+               "password protected", "the HTML page has no text", "the text file is empty")
 
 # UNA IMAGEN SIN TEXTO ES DEFINITIVA SI EL MOTOR FUNCIONO. Las fotos sin letras
 # (logos, paisajes, 3 caracteres sueltos) salian "sin texto" y, como ese motivo no
@@ -152,6 +152,10 @@ def es_definitiva(ficha: dict) -> bool:
         return True
     motivo = str(ficha.get("not_read_because") or "")
     if any(m in motivo for m in PERMANENTES):
+        return True
+    # Los '~$' son el archivo de bloqueo que deja Word con un documento abierto: no
+    # llevan texto y el documento de verdad se lee aparte (9-oct).
+    if str(ficha.get("file_name") or "").startswith("~$"):
         return True
     return bool(ficha.get("ocr_ok")) and motivo.startswith(SIN_TEXTO_DE_VERDAD)
 

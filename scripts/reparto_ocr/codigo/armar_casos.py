@@ -131,7 +131,14 @@ class Armador:
                 previa = self.estado.get(i)
                 if previa and previa[1] and not x.get("was_read"):
                     continue
-                self.estado[i] = (es_definitiva(x), bool(x.get("was_read")), x.get("hash"),
+                # Un fallo definitivo tampoco lo pisa uno pasajero. Los diarios se leen
+                # por orden de NOMBRE, no de fecha: el 9-oct el de 'relectura' (viejo)
+                # pisaba al de 'incompletos' (nuevo) y el zip de audio ya cerrado seguia
+                # dejando su caso incompleto.
+                definitiva = es_definitiva(x)
+                if previa and previa[0] and not definitiva:
+                    continue
+                self.estado[i] = (definitiva, bool(x.get("was_read")), x.get("hash"),
                                   str(fichero), inicio, len(crudo))
                 nuevas += 1
             self.leido_hasta[str(fichero)] = pos

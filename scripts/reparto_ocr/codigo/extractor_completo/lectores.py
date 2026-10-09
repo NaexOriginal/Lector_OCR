@@ -706,6 +706,13 @@ class LectorZIP(Lector):
                             if CONTRASENAS else "no password was found in the folder")
                 return "", (f"the zip is password protected ({len(entradas)} entries) "
                             f"and {probadas}: pass one with --password"), ""
+            # Si TODAS las entradas son de un tipo sin lector (las grabaciones .wav de
+            # un zip de llamadas, 9-oct), el motivo lo dice con la frase permanente
+            # 'no reader for': si no, el zip se reintentaba en cada tanda para nada.
+            sin_lector = sorted({d["not_read_because"] for d in dentro})
+            if all(m and m.startswith("no reader for") for m in sin_lector):
+                return "", (f"zip with {len(entradas)} entries, none readable: "
+                            + "; ".join(sin_lector)), ""
             return "", f"zip with {len(entradas)} entries, none readable", ""
 
         usados = ", ".join(sorted({c for c in leidos if c}))
