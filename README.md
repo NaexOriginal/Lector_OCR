@@ -47,6 +47,46 @@ python leer.py SCAN_0042.png --plantilla FCRA   ->  09_Motions
 los destinos que declara existan de verdad en su plantilla. Un nombre mal escrito ahí
 no falla haciendo ruido: crearía una carpeta nueva en producción.
 
+## A qué caso pertenece: asunto, nombre e Index
+
+Un archivo que llega suelto (un aviso de DocketBird, una radicación en la bandeja)
+no trae carpeta. `expediente.identificar` la busca con cuatro señales, de la más
+barata a la más cara:
+
+| Señal | Ejemplo |
+|---|---|
+| El **asunto** del correo | `New filing: nyed-1:25-cv-06123` |
+| El **nombre** del archivo | `task-379 - 709633-2025 - Doc 19 - ORDER.pdf` |
+| El **Index dentro** del documento | `INDEX NO. 709633/2025`, `Case 1:25-cv-06123-ENV` |
+| El **apellido** del cliente en la carátula | `JOHN DOE, Plaintiff` |
+
+```python
+from lector_ocr import identificar
+
+caso = identificar(texto, carpetas, asunto=asunto, nombre_archivo=nombre)
+caso.carpeta      # 'Doe, John - 100001 - 709633-2025'
+caso.se_decidio   # 'el asunto' | 'el nombre del archivo' | 'el indice del documento' | 'el apellido del documento'
+caso.confirmado   # True solo si el Index casa Y el apellido de esa carpeta está dentro
+```
+
+`carpetas` son los nombres de las carpetas de caso tal como los da SharePoint; el
+paquete no habla con SharePoint, quien llama ya tiene la lista.
+
+- **El Index identifica el caso; el apellido lo confirma.** Las dos señales de
+  acuerdo (`confirmado`) es lo que se puede archivar sin que nadie mire. Solo una, se
+  propone. Dos que se contradicen (el asunto dice un caso y la carátula otro) no se
+  resuelven: `CONFLICT`, sin carpeta. Un escrito en el expediente equivocado es peor
+  que uno en la bandeja.
+- **Un documento cita varios Index.** Manda el etiquetado (`INDEX NO.`) y el de la
+  carátula; los del cuerpo son citas de otros pleitos.
+- **Todas las formas del mismo número son el mismo caso:** `709633/25` y
+  `709633-2025`; `1:25-cv-6123`, `nyed-1:25-cv-06123` y `1_25-cv-06123`. Los ZIP+4
+  (`NY 11228-2016`) y las fechas no cuentan como Index.
+- **El apellido se busca al revés:** no «qué personas nombra el documento», sino «el
+  apellido de esta carpeta, ¿está dentro?». No depende de un catálogo de clientes.
+  Para proponer un caso solo por apellido se exige que esté en la carátula y que
+  tenga más de tres letras; `Lee` o `Rao` aparecen en cualquier escrito.
+
 ## Posición contra contenido
 
 Esto es para archivos **sueltos**, los que no tienen carpeta que los explique. Si un
@@ -170,8 +210,22 @@ json.dumps(registro, ensure_ascii=False)   # una línea del fichero
  "was_read": true, "read_with": "PaddleOCR (mean confidence 0.97) (image)", "not_read_because": null,
  "document_type": "Notice of motion", "goes_to": "03_Litigation/Motions",
  "decided_by": "el contenido (titulo)", "decided_because": "NOTICE OF MOTION",
- "contains_ssn": true, "extracted_text_length": 42, "extracted_text": "..."}
+ "contains_ssn": true, "index_numbers": ["709633-2025"],
+ "extracted_text_length": 42, "extracted_text": "..."}
 ```
+
+`index_numbers` va siempre, con el del caso primero. Si se pasan `carpetas` (y el
+`asunto`, si el archivo vino por correo), la ficha añade `case_folder`,
+`case_found_by`, `case_confirmed`, `case_because` y, si hay duda, `case_candidates`:
+
+```python
+ficha_de(nombre, datos, "FCRA", carpetas=carpetas, asunto=asunto)
+```
+
+**Varios archivos a la vez:** `fichas_de([(nombre, datos), ...], plantilla, **opciones)`
+devuelve las fichas en el mismo orden. Lo que no necesita OCR se lee mientras otro
+archivo está en el OCR; el OCR sigue siendo uno a la vez y con un solo modelo. Un
+archivo que falla no tumba a los demás: su ficha trae el motivo.
 
 **JSONL y no JSON**, y no es cosmético. Un expediente crece: hoy se describen tres
 archivos y mañana treinta. Con JSONL se **añaden líneas al final** sin releer ni
@@ -204,6 +258,12 @@ tomada sin saber cuántos documentos llevan datos personales no es una decisión
 capacidad, varios procesos detrás de una cola — nunca varios modelos dentro del mismo
 proceso.
 
+**Velocidad del OCR.** Dos cambios que no tocan el texto leído: la página pasa de
+PyMuPDF a PIL **sin codificarla en PNG** (0,54 s → 0,08 s por página) y el arreglo que
+recibe Paddle es **contiguo** (OpenCV copiaba la página entera en cada línea de texto:
+2,93 s → 0,32 s por página). Juntos, el OCR de escaneos va hasta 9 veces más rápido.
+Las páginas gigantes (planos) se rasterizan a menos DPI en vez de fallar.
+
 **La lectura es completa por defecto.** `ficha_de` lee todas las páginas y no tiene
 tope de tamaño: la ficha es el texto del documento, no una muestra, y con un tope los
 escaneos largos —justo los que solo tienen texto si se les hace OCR— quedaban a medias.
@@ -215,6 +275,25 @@ principio, unas dos páginas), en vez de volver a leer el archivo. Antes lo leí
 veces, y un escaneo pasaba dos veces por el OCR. Comprobado sobre 119 documentos: la
 clasificación sale igual en 118; el que cambia es un `.doc`, formato que antes no
 tenía lector.
+
+**Arrancar el motor antes de la primera petición.** `paddle_ocr.calentar()` importa
+Paddle y carga el modelo una vez y devuelve `(listo, por qué no)`. Así un motor roto se
+ve al arrancar y no se confunde en el log con un documento sin texto. El import va
+bajo candado: con varios archivos a la vez, todos pedían Paddle en el mismo instante
+y uno lo cogía a medio cargar.
+
+**Si la GPU se rompe, se dice.** Con varios procesos de Paddle en la misma GPU, uno
+puede dar `CUDA error(700)`; desde ahí ese proceso ya no lee. `paddle_ocr.gpu_rota()`
+devuelve el primer error para que quien lo lanza lo reinicie.
+
+**Ajustes por variable de entorno**, sin tocar código:
+
+| Variable | Efecto |
+|---|---|
+| `OCR_LADO_MAX=2048` | lado mayor de la página que entra al detector (por defecto ~4.000 px). Más rápido y estable en GPU de servidor; ~190 dpi en carta |
+| `OCR_GIRO=0` | no endereza la página antes de leerla (más rápido, peor con páginas de lado) |
+| `OCR_DISPOSITIVO=cpu` | fuerza CPU aunque haya GPU |
+| `OCR_NUCLEOS` | hilos de CPU para Paddle |
 
 **Imágenes descomprimidas enormes.** Pillow avisa por encima de ~89 megapíxeles y
 falla por encima de ~179. Con entrada de terceros eso es una vía de denegación de
@@ -239,6 +318,7 @@ nombre con un 400 seco. Nos costó el 20% de una migración.
 | `equivalencias.py` | nombre de carpeta a nombre de carpeta |
 | `plantillas.py` | las dos estructuras. Se sustituyen para adaptarlo a otra casa |
 | `archivar.py` | une las dos mitades |
+| `expediente.py` | a qué caso pertenece: asunto, nombre del archivo, Index y apellido |
 | `ficha.py` | la línea de JSONL de un archivo, y la cabecera del expediente |
 
 ## Qué lee
@@ -268,7 +348,12 @@ todas las hojas y filas de un Excel, el correo entero, todas las entradas de un 
 comprimidos anidados hasta cinco niveles.
 
 El lector de ZIP abre archivos protegidos si la contraseña aparece en un documento
-hermano (`Password: X`), que es como llegan de algunos proveedores.
+hermano (`Password: X`), que es como llegan de algunos proveedores. **Los PDF con
+contraseña** prueban las mismas claves (`lectores.CONTRASENAS`, o `--password` en
+`leer.py`); si ninguna abre, el motivo dice `the PDF is password protected` en vez de
+pasar por un escaneo sin texto. Un archivo de 0 bytes sale `empty file (0 bytes)`, y
+un ZIP cuyas entradas son todas de un tipo sin lector (grabaciones `.wav`) lo dice con
+`no reader for`: no hay nada que reintentar.
 
 El de `.docx` recorre el cuerpo **en orden de documento**, no párrafos y luego
 tablas: la carátula de un escrito vive en una tabla y se iba al final del texto,

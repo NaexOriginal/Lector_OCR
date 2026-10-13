@@ -86,7 +86,13 @@ def que_es_de_verdad(datos: bytes) -> str | None:
     if len(datos) < 4:
         return None
     cabeza = datos[:16]
-    if b"%PDF-" in datos[:1024]:
+    # LOS CONTENEDORES ANTES QUE EL PDF. '%PDF-' se busca en los primeros 1.024 bytes
+    # (algunos PDF traen basura delante), y un ZIP guardado SIN comprimir que empieza
+    # por un PDF lo lleva ahi mismo: se leia como un unico PDF y lo demas que traia
+    # dentro no se leia.
+    contenedor = cabeza.startswith((b"PK\x03\x04", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",
+                                    b"7z\xbc\xaf\x27\x1c", b"\x78\x9f\x3e\x22"))
+    if not contenedor and b"%PDF-" in datos[:1024]:
         return "pdf"
     if cabeza.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
         return _dentro_de_ole(datos)
