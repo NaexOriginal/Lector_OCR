@@ -1,0 +1,70 @@
+# Reglas para decidir a que carpeta de caso va un documento que llega suelto
+# (un aviso de DocketBird, una radicacion de NYSCEF dejada en la bandeja).
+#
+# SE PRUEBAN EN ORDEN y gana la primera que encuentra carpeta. Si ninguna la
+# encuentra, el documento va a la carpeta de sin clasificar y alguien lo mira.
+#
+# Cambiar el orden, apagar una regla (quitarla o comentarla) o ajustar sus
+# parametros se hace aqui, sin tocar codigo. Un TIPO de regla nuevo (por ejemplo,
+# buscar el numero de prestamo) si necesita programarse una vez en
+# lector_ocr/reglas.py; despues se usa desde aqui como los demas.
+#
+# Tipos de regla:
+#   indice    busca el Index Number (estatal '709633-2025' o federal
+#             '1-25-cv-06123', en cualquiera de sus formas) en las `fuentes`
+#   cliente   busca la carpeta cuyo nombre de cliente aparece en las `fuentes`
+#
+# Fuentes:
+#   asunto           el asunto del correo que trajo el archivo
+#   nombre_archivo   el nombre del archivo
+#   documento        el texto leido, con el OCR si hizo falta (el Index
+#                    etiquetado 'INDEX NO.' y el de la caratula van primero)
+#   caratula         el principio del texto leido: ahi estan las partes
+#
+# Desempate, cuando una regla encuentra VARIAS carpetas. Se aplican en orden; cada
+# criterio se queda con las que lo cumplen (si ninguna lo cumple, no descarta nada)
+# y en cuanto queda UNA, esa es:
+#   activa            las que no estan cerradas ('Closed')
+#   nombre_completo   las que tienen el nombre completo (nombre y apellido) en las fuentes
+#   un_solo_cliente   un freno: si las carpetas son de clientes DISTINTOS no se elige
+#                     ninguna. Elegir entre clientes distintos seria adivinar de quien
+#                     es el documento
+#   sin_indice        las que aun no tienen Index Number (nombre terminado en '- 0')
+#   mas_reciente      la creada mas recientemente
+# Si despues de todos quedan varias, no se elige: va a sin clasificar.
+
+[general]
+# Cuanto texto es 'la caratula'. Una demanda federal lista a todos los demandados
+# antes de empezar, y ahi puede haber quince lineas de partes.
+caratula = 2500
+
+# Regla 1: el Index Number en el asunto o en el nombre del archivo. Es lo mas barato
+# y lo que mejor identifica el caso.
+[[regla]]
+nombre = "Index en el asunto o el nombre del archivo"
+tipo = "indice"
+fuentes = ["asunto", "nombre_archivo"]
+desempate = ["activa", "un_solo_cliente", "mas_reciente"]
+
+# Regla 1 (b): si ahi no estaba, el Index Number dentro del documento. El OCR ya se
+# hizo para leerlo, asi que buscarlo no cuesta nada mas.
+[[regla]]
+nombre = "Index dentro del documento"
+tipo = "indice"
+fuentes = ["documento"]
+desempate = ["activa", "un_solo_cliente", "mas_reciente"]
+
+# Reglas 2 y 3: sin Index Number, el nombre del cliente. Si el cliente tiene varios
+# casos, primero la carpeta que aun no tiene Index Number y, si no hay (o hay
+# varias), la creada mas recientemente.
+[[regla]]
+nombre = "Nombre del cliente"
+tipo = "cliente"
+fuentes = ["asunto", "caratula"]
+# Apellidos mas cortos que esto no bastan para PROPONER un caso: 'Lee' o 'Rao'
+# aparecen en cualquier escrito.
+largo_minimo = 4
+# Palabras que no distinguen a nadie, ademas de las que ya trae el codigo
+# (llc, inc, court, plaintiff, el nombre de la firma...).
+ignorar = []
+desempate = ["nombre_completo", "un_solo_cliente", "sin_indice", "mas_reciente"]
