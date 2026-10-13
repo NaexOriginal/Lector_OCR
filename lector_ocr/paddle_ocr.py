@@ -69,6 +69,35 @@ CONFIANZA_MINIMA = 0.55
 IDIOMA = "en"
 
 
+# EL IMPORT, DE UNO EN UNO. Paddle es un paquete enorme, y si varios hilos lo
+# importan a la vez uno lo coge a medio cargar ('partially initialized module':
+# AttributeError). Peor: un import que falla a la mitad deja modulos rotos en
+# sys.modules, y a partir de ahi CADA import del proceso falla. Con varios archivos
+# leyendose a la vez, todos pedian Paddle en el mismo instante y un equipo sano
+# devolvia 'could not be loaded' en cada imagen. Por eso: candado, y el resultado
+# bueno se recuerda.
+_candado_import = threading.Lock()
+_ya_disponible = False
+# EL FALLO TAMBIEN SE RECUERDA. Cada intento de importar Paddle anade sus carpetas de
+# CUDA al PATH del proceso. Reintentando en cada archivo, tras unos cientos el PATH
+# pasa el limite de Windows y desde ahi todo falla con 'WinError 206: The filename
+# or extension is too long'. Un import que falla no se arregla solo a mitad de
+# corrida: se dice una vez y se sigue sin Paddle.
+_fallo_import: str | None = None
+# LA GPU ROTA NO SE ARREGLA SOLA. Con varios procesos de Paddle en la misma GPU, de
+# vez en cuando uno da 'CUDA error(700), an illegal memory access' o 'CUDA
+# error(716), misaligned address'. Desde ese momento ESE proceso ya no puede usar la
+# GPU: cada archivo siguiente fallaba en un segundo y quedaba como no leido. Se
+# recuerda el primer error para que quien lanza el proceso lo vea (gpu_rota()) y lo
+# reinicie con la GPU limpia; Paddle carga en unos segundos.
+_gpu_rota: str | None = None
+
+
+def gpu_rota() -> str | None:
+    """El primer error de CUDA de este proceso, o None si la GPU sigue bien."""
+    return _gpu_rota
+
+
 def disponible() -> tuple[bool, str]:
     """(se puede usar, por que no). Nunca lanza.
 
@@ -78,12 +107,47 @@ def disponible() -> tuple[bool, str]:
     paddleocr, esto contestaba que si con el motor desinstalado, y una corrida de
     349 archivos habria arrancado para caerse en el primero.
     """
+    global _ya_disponible, _fallo_import
+    if _ya_disponible:
+        return True, ""
+    if _fallo_import:
+        return False, _fallo_import
+    with _candado_import:
+        if _ya_disponible:
+            return True, ""
+        if _fallo_import:
+            return False, _fallo_import
+        puede, motivo = _importar()
+        _ya_disponible = puede
+        if not puede:
+            _fallo_import = motivo
+        return puede, motivo
+
+
+def calentar() -> tuple[bool, str]:
+    """Importa Paddle y construye el modelo UNA vez, antes de leer nada.
+
+    Para quien arranca un servidor o una tanda: devuelve (listo, por que no). Si no
+    esta listo conviene saberlo al empezar, no en el primer escaneo, donde un motor
+    que falta se confunde en el log con un documento sin texto.
+    """
+    puede, motivo = disponible()
+    if not puede:
+        return False, motivo
+    try:
+        _motor()
+    except Exception as error:  # noqa: BLE001
+        return False, f"PaddleOCR could not start ({type(error).__name__}: {error})"[:200]
+    return True, ""
+
+
+def _importar() -> tuple[bool, str]:
     try:
         import paddleocr  # noqa: F401
     except ImportError:
         return False, "paddleocr is not installed (pip install paddleocr)"
     except Exception as error:  # noqa: BLE001
-        return False, f"paddleocr could not be loaded ({type(error).__name__})"
+        return False, f"paddleocr could not be loaded ({type(error).__name__}: {error})"[:240]
 
     try:
         import paddle  # noqa: F401
@@ -91,7 +155,7 @@ def disponible() -> tuple[bool, str]:
         return False, ("paddleocr is installed but paddlepaddle is not: "
                        "install paddlepaddle (CPU) or paddlepaddle-gpu")
     except Exception as error:  # noqa: BLE001
-        return False, f"paddlepaddle could not be loaded ({type(error).__name__})"
+        return False, f"paddlepaddle could not be loaded ({type(error).__name__}: {error})"[:240]
     return True, ""
 
 
@@ -180,10 +244,21 @@ def _construir():
     # prueba exacto. En una tanda real dejo sin leer todas las paginas escaneadas
     # de los equipos sin GPU. En GPU no aplica: ahi no se usa oneDNN.
     extra = {"enable_mkldnn": False} if donde == "cpu" else {}
+    # AJUSTES PARA EL SERVIDOR, por variable de entorno; sin ellas, lo de siempre.
+    #   OCR_GIRO=0         no endereza la pagina antes de leerla (PP-LCNet_x1_0_doc_ori)
+    #   OCR_LADO_MAX=2048  el lado mayor de la pagina que entra al detector de texto
+    #                      (por defecto Paddle la deja hasta 4.000 px)
+    # Con OCR_LADO_MAX=2048, un proceso en una GPU de servidor (A100) dejo de dar
+    # 'CUDA error' y lee mas rapido. 2.048 px son ~190 dpi en carta. Una pagina
+    # escaneada de lado se lee peor sin el giro, asi que ese se deja encendido.
+    giro = os.environ.get("OCR_GIRO", "1").strip() != "0"
+    lado = int(os.environ.get("OCR_LADO_MAX", "0").strip() or 0)
+    if lado:
+        extra.update(text_det_limit_type="max", text_det_limit_side_len=lado)
     try:
         return PaddleOCR(lang=IDIOMA,
                          device=donde,
-                         use_doc_orientation_classify=True,
+                         use_doc_orientation_classify=giro,
                          use_doc_unwarping=False,
                          use_textline_orientation=False,
                          **extra)
@@ -197,7 +272,12 @@ def _como_arreglo(imagen):
     import numpy as np
 
     arreglo = np.array(imagen.convert("RGB"))
-    return arreglo[:, :, ::-1]
+    # CONTIGUO, NO UNA VISTA. arreglo[:, :, ::-1] es una vista con el paso negativo, y
+    # Paddle recorta cada linea de texto con cv2.warpPerspective sobre la pagina
+    # entera: OpenCV no acepta esa vista y copia la pagina (24 MB a 300 DPI) EN CADA
+    # LINEA. Medido: el 90% del tiempo de OCR; 2,93 s por pagina antes y 0,32 s
+    # despues, con el mismo texto.
+    return np.ascontiguousarray(arreglo[:, :, ::-1])
 
 
 def _fragmentos(salida) -> list[tuple[float, float, str, float]]:
@@ -255,9 +335,13 @@ def leer(imagen, confianza_minima: float = CONFIANZA_MINIMA) -> tuple[str, dict]
 
     detalle = {fragmentos, descartados, confianza_media, confianza_minima_vista}
     """
+    global _gpu_rota
     puede, motivo = disponible()
     if not puede:
         return "", {"error": motivo}
+    if _gpu_rota:
+        # No se toca mas la GPU: ya no responde y cada intento solo anade otro error.
+        return "", {"error": f"PaddleOCR failed (the GPU is broken in this process: {_gpu_rota})"[:160]}
 
     try:
         motor = _motor()
@@ -271,6 +355,8 @@ def leer(imagen, confianza_minima: float = CONFIANZA_MINIMA) -> tuple[str, dict]
                 salida = motor.ocr(arreglo)          # 2.x
         trozos = _fragmentos(salida)
     except Exception as error:  # noqa: BLE001
+        if "CUDA error" in str(error) and _gpu_rota is None:
+            _gpu_rota = str(error).strip()[:100]
         return "", {"error": f"PaddleOCR failed ({type(error).__name__}: {error})"[:160]}
 
     # Se agrupan por renglon antes de ordenar: dos fragmentos de la misma linea

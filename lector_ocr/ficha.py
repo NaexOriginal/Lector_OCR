@@ -23,9 +23,12 @@ es una decision.
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from typing import Iterable, Sequence
 
 from .archivar import PAGINAS, donde_archivar
+from .expediente import identificar, indices_del_documento
 from .lectores import leer_con_detalle
 
 # Un numero de la Seguridad Social de EE.UU. tal y como se escribe en un documento.
@@ -50,11 +53,17 @@ def enmascarar(texto: str) -> str:
 def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
              subcarpeta: str = "", paginas: int = PAGINAS_POR_DEFECTO,
              con_texto: bool = True, enmascarar_ssn: bool = False,
-             max_mb: float = MAX_MB) -> dict:
+             max_mb: float = MAX_MB, carpetas: Sequence[str] | None = None,
+             asunto: str = "") -> dict:
     """Todo lo que se sabe de un archivo, listo para volcar como una linea de JSONL.
 
     `datos` es el contenido en bytes. `plantilla` decide en que estructura se busca
     la carpeta destino. `subcarpeta` es donde esta el archivo, si se sabe.
+
+    `carpetas`, si se pasa, son los nombres de las carpetas de caso: entonces la ficha
+    dice tambien A QUE CASO pertenece el documento (expediente.identificar), mirando
+    el `asunto` del correo, el nombre del archivo y lo que dice por dentro. Sin
+    `carpetas` no se busca caso, pero `index_numbers` va siempre.
 
     Los campos de control van primero y el texto al final, a proposito: es lo mas
     largo con diferencia, y quien abra el fichero quiere ver antes de que va el
@@ -66,16 +75,24 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
         "subfolder": subcarpeta or "(folder root)",
         "size_mb": round(tamano, 2),
     }
+    # 0 BYTES NO ES 'SIN TEXTO': no hay nada que leer, y quien reintenta tiene que
+    # saber que no va a cambiar. La frase es la que ya usa la lectura de Matters.
+    if not datos:
+        return {**base, "was_read": False, "read_with": None,
+                "not_read_because": "empty file (0 bytes)",
+                **_caso(carpetas, "", nombre, asunto)}
     if max_mb and tamano > max_mb:
         return {**base, "was_read": False, "read_with": None,
-                "not_read_because": f"larger than {max_mb} MB"}
+                "not_read_because": f"larger than {max_mb} MB",
+                **_caso(carpetas, "", nombre, asunto)}
 
     extension = nombre.rsplit(".", 1)[-1].lower() if "." in nombre else ""
     try:
         texto, fallo, con_que = leer_con_detalle(extension, datos, paginas)
     except Exception as error:  # noqa: BLE001
         return {**base, "was_read": False, "read_with": None,
-                "not_read_because": f"{type(error).__name__}: {error}"[:120]}
+                "not_read_because": f"{type(error).__name__}: {error}"[:120],
+                **_caso(carpetas, "", nombre, asunto)}
 
     # Se clasifica con el texto que ya se leyo (su principio): leerlo otra vez
     # seria un segundo OCR del mismo escaneo.
@@ -92,11 +109,56 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
         "decided_by": destino.se_decidio or None,
         "decided_because": destino.evidencia or None,
         "contains_ssn": lleva_ssn,
+        # El del caso primero: los etiquetados ('INDEX NO.') y los de la caratula
+        # van delante de los que el cuerpo cita de otros pleitos.
+        "index_numbers": indices_del_documento(texto)[:10],
+        **_caso(carpetas, texto, nombre, asunto),
         "extracted_text_length": len(texto),
     }
     if con_texto:
         ficha["extracted_text"] = (enmascarar(texto) if enmascarar_ssn else texto) or None
     return ficha
+
+
+def _caso(carpetas: Sequence[str] | None, texto: str, nombre: str, asunto: str) -> dict:
+    """Los campos del caso para la ficha; nada si no se pasaron carpetas."""
+    if carpetas is None:
+        return {}
+    caso = identificar(texto, carpetas, asunto=asunto, nombre_archivo=nombre)
+    campos = {
+        "case_folder": caso.carpeta,
+        "case_found_by": caso.se_decidio or None,
+        "case_confirmed": caso.confirmado,
+        "case_because": caso.razon,
+    }
+    if caso.candidatos:
+        campos["case_candidates"] = caso.candidatos
+    return campos
+
+
+# VARIOS ARCHIVOS A LA VEZ. Un correo trae varios adjuntos y una bandeja varios
+# archivos: leerlos uno detras de otro hace esperar a todos por el escaneo mas largo.
+# Con hilos, lo que no necesita OCR (capas de texto, Word, correo) se lee mientras
+# otro archivo esta en el OCR. El OCR en si sigue siendo uno a la vez y con un solo
+# modelo (paddle_ocr): el paralelismo que ayuda es el de todo lo demas.
+HILOS = 4
+
+
+def fichas_de(archivos: Iterable[tuple[str, bytes]], plantilla: str = "Foreclosure", *,
+              hilos: int = HILOS, **opciones) -> list[dict]:
+    """Las fichas de varios archivos, en el mismo orden en que llegaron.
+
+        fichas_de([("Order.pdf", datos1), ("Exhibit A.pdf", datos2)], "FCRA",
+                  carpetas=carpetas, asunto=asunto)
+
+    Las `opciones` son las de ficha_de y valen para todos. Un archivo que falla no
+    tumba a los demas: ficha_de nunca lanza por un archivo malo, devuelve su motivo.
+    """
+    lista = list(archivos)
+    if len(lista) <= 1 or hilos <= 1:
+        return [ficha_de(nombre, datos, plantilla, **opciones) for nombre, datos in lista]
+    with ThreadPoolExecutor(max_workers=min(hilos, len(lista))) as grupo:
+        return list(grupo.map(lambda a: ficha_de(a[0], a[1], plantilla, **opciones), lista))
 
 
 def cabecera(matter: str, fichas: list[dict], *, parcial: bool = False,

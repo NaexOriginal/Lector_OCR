@@ -150,6 +150,13 @@ class Armador:
             fh.seek(inicio)
             return json.loads(fh.read(largo))
 
+    def _donde(self, i: str) -> dict:
+        """Nombre y subcarpeta de HOY, del arbol. La ficha leida guarda la ruta del plan de
+        migracion, no la real, y en el arbol 'sub' ya es la carpeta (sin el nombre): cortarle
+        el ultimo tramo daba '00_Unfiled' para lo que vive en '00_Unfiled/QWR' (Mario, 10-oct)."""
+        m = self.meta[i]
+        return {"file_name": m["name"], "subfolder": m.get("sub") or "(folder root)"}
+
     def _cargar_base(self) -> None:
         base = self.carpeta / f"base_fichas_{self.etapa}_{self.equipo}.jsonl"
         if not base.exists():
@@ -246,13 +253,11 @@ class Armador:
         for i in self.arbol[e]:
             v = self.estado.get(i)
             if v and v[0]:
-                fichas.append({**self._ficha(i), "id": i, "caso": e})
+                fichas.append({**self._ficha(i), "id": i, "caso": e, **self._donde(i)})
                 continue
             m = self.meta[i]
             orig = self._ficha(original_de[m["hash"]])
-            sub = m.get("sub") or ""
-            fichas.append({"id": i, "caso": e, "file_name": m["name"],
-                           "subfolder": sub.rsplit("/", 1)[0] if "/" in sub else "(folder root)",
+            fichas.append({"id": i, "caso": e, **self._donde(i),
                            "size_mb": round(m["size"] / 2 ** 20, 2), "hash": m["hash"],
                            **{k: orig.get(k) for k in CAMPOS_DE_LECTURA}, "copied_from": orig.get("id")})
         crudo = armar(e, fichas, len(vivos), carpeta_id).encode("utf-8")
@@ -332,18 +337,16 @@ class Armador:
             fichas = []
             for i in ids:
                 v, m = self.estado.get(i), self.meta[i]
-                sub = m.get("sub") or ""
-                base = {"id": i, "caso": e, "file_name": m["name"],
-                        "subfolder": sub.rsplit("/", 1)[0] if "/" in sub else "(folder root)",
+                base = {"id": i, "caso": e, **self._donde(i),
                         "size_mb": round(m["size"] / 2 ** 20, 2), "hash": m.get("hash")}
                 if v and v[0]:
-                    fichas.append({**self._ficha(i), "id": i, "caso": e})
+                    fichas.append({**self._ficha(i), "id": i, "caso": e, **self._donde(i)})
                 elif m.get("hash") in original_de:
                     orig = self._ficha(original_de[m["hash"]])
                     fichas.append({**base, **{k: orig.get(k) for k in CAMPOS_DE_LECTURA},
                                    "copied_from": orig.get("id")})
                 elif v:
-                    fichas.append({**self._ficha(i), "id": i, "caso": e})
+                    fichas.append({**self._ficha(i), "id": i, "caso": e, **self._donde(i)})
                 else:
                     fichas.append({**base, "was_read": False, "read_with": None,
                                    "not_read_because": "not read in this stage"})

@@ -11,6 +11,8 @@ el texto es el que escribio el autor) o Tesseract (probable, y hay que subir DPI
 Uso:
     python leer.py documento.pdf
     python leer.py escaneo.pdf --motor tesseract --paginas 4
+    python leer.py produccion.pdf --password Xk29a
+    python leer.py radicacion.pdf --carpetas carpetas.txt --asunto "New filing nyed-1:25-cv-06123"
     python leer.py --diagnostico
 """
 
@@ -19,8 +21,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from lector_ocr import (donde_archivar, extensiones_soportadas,
-                        leer_con_detalle, ocr, paddle_ocr)
+from lector_ocr import (donde_archivar, extensiones_soportadas, identificar,
+                        indices_del_documento, leer_con_detalle, lectores, ocr,
+                        paddle_ocr)
 
 
 def diagnostico() -> None:
@@ -49,6 +52,13 @@ def main() -> None:
                    help="Cuanto texto se imprime")
     p.add_argument("--plantilla", choices=["Foreclosure", "FCRA"], default="Foreclosure",
                    help="Con cual de las dos estructuras se decide la carpeta")
+    p.add_argument("--password", action="append", default=[],
+                   help="Clave para un PDF o ZIP protegido (se puede repetir)")
+    p.add_argument("--carpetas",
+                   help="Archivo con los nombres de las carpetas de caso, uno por linea: "
+                        "dice a que caso pertenece el documento")
+    p.add_argument("--asunto", default="",
+                   help="El asunto del correo que trajo el archivo, si lo hubo")
     p.add_argument("--diagnostico", action="store_true",
                    help="Solo dice que esta instalado")
     args = p.parse_args()
@@ -59,6 +69,7 @@ def main() -> None:
 
     if args.motor:
         ocr.elegir(args.motor)
+    lectores.CONTRASENAS.extend(c.encode("utf-8") for c in args.password)
 
     ruta = Path(args.archivo)
     if not ruta.exists():
@@ -78,6 +89,17 @@ def main() -> None:
           + (f"   [{destino.certeza}]" if destino.certeza else ""))
     print(f"  va a       {destino.carpeta or '(sin clasificar)'}"
           + (f"   <- {destino.se_decidio}" if destino.se_decidio else ""))
+    print(f"  indices    {', '.join(indices_del_documento(texto)[:5]) or '(ninguno)'}")
+    if args.carpetas:
+        carpetas = [c.strip() for c in Path(args.carpetas).read_text(encoding="utf-8").split("\n")
+                    if c.strip()]
+        caso = identificar(texto, carpetas, asunto=args.asunto, nombre_archivo=ruta.name)
+        print(f"  caso       {caso.carpeta or '(ninguno)'}"
+              + (f"   <- {caso.se_decidio}" if caso.se_decidio else "")
+              + ("   [confirmado]" if caso.confirmado else ""))
+        print(f"             {caso.razon}")
+        for otro in caso.candidatos:
+            print(f"             candidato: {otro}")
     if motivo:
         print(f"  aviso      {motivo}")
     print("\n" + "-" * 70)

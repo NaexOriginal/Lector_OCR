@@ -91,6 +91,13 @@ class LectorPDF(Lector):
         y un reporte de credito con fuentes sin mapa de caracteres se daba por
         leido con indices de glifo. El OCR no llegaba a dispararse nunca.
         """
+        # UN PDF CON CONTRASENA NO ESTA VACIO. pypdf y PyMuPDF no sacaban nada, el OCR
+        # rasterizaba paginas en blanco y salia 'OCR got no text': producciones de
+        # discovery de cientos de paginas pasaban por vacias. Se prueban las claves
+        # conocidas (CONTRASENAS) y, si ninguna abre, se dice que esta cerrado.
+        datos, cerrado = _quitar_clave_pdf(datos)
+        if cerrado:
+            return "", cerrado, ""
         leidas = paginas
         try:
             lector = pypdf.PdfReader(io.BytesIO(datos))
@@ -559,6 +566,35 @@ def parece_archivo_de_clave(nombre: str) -> bool:
     return bool(ARCHIVO_DE_CLAVE.search(str(nombre)))
 
 
+# La clave en el NOMBRE del archivo: 'Password - Xk29a.txt', 'pwd_Xk29a.docx'. Pasa:
+# el archivo de clave de algunas carpetas esta vacio y lo unico que dice es su nombre.
+CLAVE_EN_NOMBRE = re.compile(
+    r"(?:passwords?|passcodes?|pass|pwd|clave|contrase\w*)[\s_\-:=]+([^\s]{4,60})", re.I)
+
+
+def _quitar_clave_pdf(datos: bytes) -> tuple[bytes, str]:
+    """El PDF sin cifrar y '' si se puede abrir; si pide una clave que no tenemos,
+    los mismos bytes y el motivo. Prueba las de CONTRASENAS, como el zip."""
+    modulo = ocr._pymupdf()
+    if modulo is None:
+        return datos, ""
+    try:
+        doc = modulo.open(stream=datos, filetype="pdf")
+    except Exception:  # noqa: BLE001
+        return datos, ""  # que lo intenten los escalones de siempre
+    try:
+        if not doc.needs_pass:
+            return datos, ""
+        for clave in CONTRASENAS:
+            if doc.authenticate(clave.decode("utf-8", "ignore")):
+                return doc.tobytes(encryption=modulo.PDF_ENCRYPT_NONE), ""
+        probadas = (f"{len(CONTRASENAS)} password(s) were tried" if CONTRASENAS
+                    else "no password was given")
+        return datos, f"the PDF is password protected ({probadas})"
+    finally:
+        doc.close()
+
+
 class LectorZIP(Lector):
     """Un zip no es un documento, es un sobre.
 
@@ -671,6 +707,13 @@ class LectorZIP(Lector):
                             if CONTRASENAS else "no password was found in the folder")
                 return "", (f"the zip is password protected ({len(entradas)} entries) "
                             f"and {probadas}: pass one with --password"), ""
+            # Si TODAS las entradas son de un tipo sin lector (las grabaciones .wav de
+            # un zip de llamadas), el motivo lo dice con la frase permanente 'no reader
+            # for': si no, quien reintenta lo volvia a abrir en cada pasada para nada.
+            sin_lector = sorted({d["not_read_because"] for d in dentro})
+            if sin_lector and all(m and m.startswith("no reader for") for m in sin_lector):
+                return "", (f"zip with {len(entradas)} entries, none readable: "
+                            + "; ".join(sin_lector)), ""
             return "", f"zip with {len(entradas)} entries, none readable", ""
 
         usados = ", ".join(sorted({c for c in leidos if c}))

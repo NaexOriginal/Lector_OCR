@@ -71,6 +71,10 @@ def _empezar() -> None:
 # Por debajo de 150 Tesseract empieza a confundir letras en los escaneos de fax del
 # despacho; por encima de 300 si tarda el doble y no acierta mas.
 DPI = 300
+# Tope de pixeles de una pagina renderizada: 89,5 millones es donde PIL empieza a
+# avisar de 'decompression bomb'. Una carta a 300 DPI son 8,4 millones; esto solo
+# toca planos y escaneos gigantes, que se renderizan a menos DPI en vez de fallar.
+LIMITE_PIXELES = 89_478_485
 
 # Idiomas. El 'rus' esta porque una parte de la clientela del despacho es
 # rusoparlante y sus documentos vienen en cirilico; si el paquete no esta instalado
@@ -663,8 +667,20 @@ def texto_de_pdf(datos: bytes, paginas: int) -> tuple[str, str, str]:
         with pymupdf.open(stream=datos, filetype="pdf") as documento:
             tope = len(documento) if paginas <= 0 else max(paginas, 1)
             for pagina in documento[:tope]:
-                pixeles = pagina.get_pixmap(dpi=DPI)
-                with Image.open(io.BytesIO(pixeles.tobytes("png"))) as imagen:
+                # LA PAGINA VA DIRECTA A PIL, SIN PASAR POR PNG. Codificar la pagina en
+                # PNG y volver a abrirla costaba 0,54 s por pagina a 300 DPI, mas que el
+                # propio OCR; directa son 0,08 s y la imagen es la misma (PNG no pierde
+                # nada). Y las paginas ENORMES (planos, fotos escaneadas a lo grande) se
+                # bajan de DPI hasta LIMITE_PIXELES: antes Image.open las rechazaba con
+                # DecompressionBombError y el archivo quedaba sin leer.
+                ancho, alto = pagina.rect.width / 72 * DPI, pagina.rect.height / 72 * DPI
+                dpi = DPI if ancho * alto <= LIMITE_PIXELES else max(
+                    36, int(DPI * (LIMITE_PIXELES / (ancho * alto)) ** 0.5))
+                pixeles = pagina.get_pixmap(dpi=dpi, alpha=False)
+                modo = {1: "L", 3: "RGB"}.get(pixeles.n)
+                imagen = (Image.frombytes(modo, (pixeles.width, pixeles.height), pixeles.samples)
+                          if modo else Image.open(io.BytesIO(pixeles.tobytes("png"))))
+                with imagen:
                     # Ya viene a 300 DPI, asi que no hay que ampliarla; lo que si
                     # puede venir es de lado, y eso el OCR no lo arregla solo.
                     trozo, con_que = leer_imagen(imagen, enderezar=True,
@@ -677,7 +693,10 @@ def texto_de_pdf(datos: bytes, paginas: int) -> tuple[str, str, str]:
 
     texto = "\n".join(partes)
     if not texto.strip():
-        return "", _sin_texto("OCR got no text: unreadable"), ""
+        # No 'OCR got no text: unreadable': esa frase la llevaban tambien los PDF con
+        # contrasena, que ahora se detectan antes (lectores._quitar_clave_pdf). Asi
+        # quien guarda las fichas sabe que esta es definitiva y aquella no.
+        return "", _sin_texto("OCR found no text on the pages"), ""
     if parece_ruido(texto):
         return "", "OCR returned noise, not words: the pages have no readable text", ""
     # En 'auto' unas paginas las puede leer uno y otras el otro, y eso hay que
