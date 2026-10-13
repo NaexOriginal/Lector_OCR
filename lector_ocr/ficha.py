@@ -25,10 +25,10 @@ from __future__ import annotations
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 from .archivar import PAGINAS, donde_archivar
-from .expediente import identificar, indices_del_documento
+from .expediente import Identificacion, identificar, indices_del_documento
 from .lectores import leer_con_detalle
 
 # Un numero de la Seguridad Social de EE.UU. tal y como se escribe en un documento.
@@ -50,20 +50,29 @@ def enmascarar(texto: str) -> str:
     return SSN.sub(lambda m: f"XXX-XX-{m.group(0)[-4:]}", texto)
 
 
+# Con plantilla="auto" la plantilla sale del caso encontrado (su ID interno). Si no se
+# encuentra caso, el documento va a sin clasificar y se clasifica con esta: da igual
+# cual, pero tiene que ser una.
+PLANTILLA_SIN_CASO = "Foreclosure"
+
+
 def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
              subcarpeta: str = "", paginas: int = PAGINAS_POR_DEFECTO,
              con_texto: bool = True, enmascarar_ssn: bool = False,
-             max_mb: float = MAX_MB, carpetas: Sequence[str] | None = None,
-             asunto: str = "") -> dict:
+             max_mb: float = MAX_MB, carpetas: Sequence[Any] | None = None,
+             asunto: str = "", reglas=None) -> dict:
     """Todo lo que se sabe de un archivo, listo para volcar como una linea de JSONL.
 
     `datos` es el contenido en bytes. `plantilla` decide en que estructura se busca
-    la carpeta destino. `subcarpeta` es donde esta el archivo, si se sabe.
+    la carpeta destino ("Foreclosure", "FCRA" o "auto"). `subcarpeta` es donde esta
+    el archivo, si se sabe.
 
-    `carpetas`, si se pasa, son los nombres de las carpetas de caso: entonces la ficha
-    dice tambien A QUE CASO pertenece el documento (expediente.identificar), mirando
-    el `asunto` del correo, el nombre del archivo y lo que dice por dentro. Sin
-    `carpetas` no se busca caso, pero `index_numbers` va siempre.
+    `carpetas`, si se pasa, son las carpetas de caso (nombres, o dicts de Graph con
+    `name`, `id` y `createdDateTime`): entonces la ficha dice tambien A QUE CASO
+    pertenece el documento, aplicando las `reglas` (reglas_ruteo.toml si no se pasan)
+    sobre el `asunto` del correo, el nombre del archivo y lo que dice por dentro. Con
+    plantilla="auto", la plantilla sale de ese caso. Sin `carpetas` no se busca caso,
+    pero `index_numbers` va siempre.
 
     Los campos de control van primero y el texto al final, a proposito: es lo mas
     largo con diferencia, y quien abra el fichero quiere ver antes de que va el
@@ -80,11 +89,11 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
     if not datos:
         return {**base, "was_read": False, "read_with": None,
                 "not_read_because": "empty file (0 bytes)",
-                **_caso(carpetas, "", nombre, asunto)}
+                **_campos_caso(_caso(carpetas, "", nombre, asunto, reglas))}
     if max_mb and tamano > max_mb:
         return {**base, "was_read": False, "read_with": None,
                 "not_read_because": f"larger than {max_mb} MB",
-                **_caso(carpetas, "", nombre, asunto)}
+                **_campos_caso(_caso(carpetas, "", nombre, asunto, reglas))}
 
     extension = nombre.rsplit(".", 1)[-1].lower() if "." in nombre else ""
     try:
@@ -92,7 +101,14 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
     except Exception as error:  # noqa: BLE001
         return {**base, "was_read": False, "read_with": None,
                 "not_read_because": f"{type(error).__name__}: {error}"[:120],
-                **_caso(carpetas, "", nombre, asunto)}
+                **_campos_caso(_caso(carpetas, "", nombre, asunto, reglas))}
+
+    # PRIMERO EL CASO, DESPUES LA SUBCARPETA: la plantilla (Foreclosure o FCRA) sale
+    # del ID interno del caso, y con la plantilla equivocada la subcarpeta seria de la
+    # OTRA estructura, que en ese expediente no existe.
+    caso = _caso(carpetas, texto, nombre, asunto, reglas)
+    if plantilla == "auto":
+        plantilla = (caso.plantilla if caso else None) or PLANTILLA_SIN_CASO
 
     # Se clasifica con el texto que ya se leyo (su principio): leerlo otra vez
     # seria un segundo OCR del mismo escaneo.
@@ -105,6 +121,7 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
         "read_with": con_que or None,
         "not_read_because": fallo or None,
         "document_type": destino.tipo or None,
+        "template": plantilla,
         "goes_to": destino.carpeta or None,
         "decided_by": destino.se_decidio or None,
         "decided_because": destino.evidencia or None,
@@ -112,7 +129,7 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
         # El del caso primero: los etiquetados ('INDEX NO.') y los de la caratula
         # van delante de los que el cuerpo cita de otros pleitos.
         "index_numbers": indices_del_documento(texto)[:10],
-        **_caso(carpetas, texto, nombre, asunto),
+        **_campos_caso(caso),
         "extracted_text_length": len(texto),
     }
     if con_texto:
@@ -120,13 +137,20 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
     return ficha
 
 
-def _caso(carpetas: Sequence[str] | None, texto: str, nombre: str, asunto: str) -> dict:
-    """Los campos del caso para la ficha; nada si no se pasaron carpetas."""
+def _caso(carpetas, texto: str, nombre: str, asunto: str, reglas) -> Identificacion | None:
     if carpetas is None:
+        return None
+    return identificar(texto, carpetas, asunto=asunto, nombre_archivo=nombre, reglas=reglas)
+
+
+def _campos_caso(caso: Identificacion | None) -> dict:
+    """Los campos del caso para la ficha; nada si no se pasaron carpetas."""
+    if caso is None:
         return {}
-    caso = identificar(texto, carpetas, asunto=asunto, nombre_archivo=nombre)
     campos = {
         "case_folder": caso.carpeta,
+        "case_folder_id": caso.carpeta_id or None,
+        "case_rule": caso.regla or None,
         "case_found_by": caso.se_decidio or None,
         "case_confirmed": caso.confirmado,
         "case_because": caso.razon,

@@ -47,45 +47,62 @@ python leer.py SCAN_0042.png --plantilla FCRA   ->  09_Motions
 los destinos que declara existan de verdad en su plantilla. Un nombre mal escrito ahí
 no falla haciendo ruido: crearía una carpeta nueva en producción.
 
-## A qué caso pertenece: asunto, nombre e Index
+## A qué caso pertenece: reglas en un `.toml`
 
-Un archivo que llega suelto (un aviso de DocketBird, una radicación en la bandeja)
-no trae carpeta. `expediente.identificar` la busca con cuatro señales, de la más
-barata a la más cara:
+Un archivo que llega suelto (un aviso de DocketBird, una radicación en la bandeja) no
+trae carpeta. `identificar` la busca aplicando **reglas que viven en un archivo**,
+`lector_ocr/reglas_ruteo.toml`, no en el código. Se prueban en orden y gana la primera
+que encuentra carpeta:
 
-| Señal | Ejemplo |
-|---|---|
-| El **asunto** del correo | `New filing: nyed-1:25-cv-06123` |
-| El **nombre** del archivo | `task-379 - 709633-2025 - Doc 19 - ORDER.pdf` |
-| El **Index dentro** del documento | `INDEX NO. 709633/2025`, `Case 1:25-cv-06123-ENV` |
-| El **apellido** del cliente en la carátula | `JOHN DOE, Plaintiff` |
+| # | Regla | Mira |
+|---|---|---|
+| 1 | Index en el asunto o el nombre del archivo | `New filing ... (nyed-1:2026-cv-04354)`, `task-379 - 709633-2025 - Doc 19.pdf` |
+| 1b | Index dentro del documento | el texto leído, con OCR si hizo falta: el `INDEX NO.` etiquetado y la carátula primero |
+| 2 | Nombre del cliente | el asunto y la carátula: el apellido de la carpeta tiene que estar |
+| 3 | Varios casos del mismo cliente | la carpeta **sin Index** (`- 0`) y, si no hay o hay varias, la **creada más recientemente** |
 
 ```python
 from lector_ocr import identificar
 
 caso = identificar(texto, carpetas, asunto=asunto, nombre_archivo=nombre)
-caso.carpeta      # 'Doe, John - 100001 - 709633-2025'
-caso.se_decidio   # 'el asunto' | 'el nombre del archivo' | 'el indice del documento' | 'el apellido del documento'
-caso.confirmado   # True solo si el Index casa Y el apellido de esa carpeta está dentro
+caso.carpeta       # 'Doe, John - 100001 - 709633-2025'
+caso.carpeta_id    # el id de SharePoint, si se pasó
+caso.regla         # 'Index en el asunto o el nombre del archivo'
+caso.se_decidio    # 'el asunto' | 'el nombre del archivo' | 'el documento' | 'la caratula'
+caso.plantilla     # 'Foreclosure' o 'FCRA', por el ID interno del caso
+caso.confirmado    # el Index casa Y el apellido de esa carpeta está dentro (para auditar)
 ```
 
-`carpetas` son los nombres de las carpetas de caso tal como los da SharePoint; el
-paquete no habla con SharePoint, quien llama ya tiene la lista.
+`carpetas` son las carpetas de caso tal como las da SharePoint: nombres sueltos o
+diccionarios de Graph con `name`, `id` y `createdDateTime` (la fecha hace falta para
+la regla 3). El paquete no habla con SharePoint: quien llama ya tiene la lista.
 
-- **El Index identifica el caso; el apellido lo confirma.** Las dos señales de
-  acuerdo (`confirmado`) es lo que se puede archivar sin que nadie mire. Solo una, se
-  propone. Dos que se contradicen (el asunto dice un caso y la carátula otro) no se
-  resuelven: `CONFLICT`, sin carpeta. Un escrito en el expediente equivocado es peor
-  que uno en la bandeja.
-- **Un documento cita varios Index.** Manda el etiquetado (`INDEX NO.`) y el de la
-  carátula; los del cuerpo son citas de otros pleitos.
-- **Todas las formas del mismo número son el mismo caso:** `709633/25` y
-  `709633-2025`; `1:25-cv-6123`, `nyed-1:25-cv-06123` y `1_25-cv-06123`. Los ZIP+4
-  (`NY 11228-2016`) y las fechas no cuentan como Index.
-- **El apellido se busca al revés:** no «qué personas nombra el documento», sino «el
-  apellido de esta carpeta, ¿está dentro?». No depende de un catálogo de clientes.
-  Para proponer un caso solo por apellido se exige que esté en la carátula y que
-  tenga más de tres letras; `Lee` o `Rao` aparecen en cualquier escrito.
+**Cambiar las reglas sin tocar código.** Reordenarlas, quitarlas o ajustar sus
+parámetros —fuentes, criterios de desempate, largo mínimo del apellido, palabras que
+no distinguen a nadie— se hace en el `.toml`, que está comentado con todo lo que
+admite. Otro juego de reglas se pasa con `reglas.cargar(ruta)`. Un **tipo** de regla
+nuevo (por ejemplo, el número de préstamo) se programa una vez en `reglas.py`
+(`TIPOS`) y desde ahí se usa como las demás.
+
+**Se valida al cargar.** Un tipo, una fuente o un criterio mal escrito lanza
+`ReglasInvalidas` diciendo cuál y cuáles valen. Si se dejara pasar, la regla no
+encontraría nunca nada y todo acabaría sin clasificar sin un solo error.
+
+**Los frenos.**
+- Carpetas de **clientes distintos** no se desempatan por fecha (`un_solo_cliente`): sería adivinar de quién es el documento.
+- Entre carpetas con el mismo Index gana la activa sobre la `Closed`.
+- Si ninguna regla decide, no se elige: la razón y los candidatos quedan en `razon` y `candidatos`.
+
+**Todas las formas del mismo número son el mismo caso:**
+- `709633/25` y `709633-2025`;
+- `1:25-cv-6123`, `nyed-1:2025-cv-06123` y `1_25-cv-06123`.
+
+Los ZIP+4 (`NY 11228-2016`) y las fechas no cuentan como Index. Comprobado contra las
+3.025 carpetas de Matters: todas se descomponen; 7 tienen un Index con año fuera de
+1990-2035 y no se reconoce, igual que en la migración.
+
+**El nombre se busca al revés:** no «qué personas nombra el documento», sino «el
+apellido de esta carpeta, ¿está dentro?». No depende de un catálogo de clientes.
 
 ## Posición contra contenido
 
@@ -216,10 +233,13 @@ json.dumps(registro, ensure_ascii=False)   # una línea del fichero
 
 `index_numbers` va siempre, con el del caso primero. Si se pasan `carpetas` (y el
 `asunto`, si el archivo vino por correo), la ficha añade `case_folder`,
-`case_found_by`, `case_confirmed`, `case_because` y, si hay duda, `case_candidates`:
+`case_folder_id`, `case_rule`, `case_found_by`, `case_confirmed`, `case_because` y, si
+hay duda, `case_candidates`. Con `plantilla="auto"` la plantilla sale del caso
+encontrado y va en `template`: primero el caso, después la subcarpeta, porque con la
+plantilla equivocada la subcarpeta sería de la otra estructura.
 
 ```python
-ficha_de(nombre, datos, "FCRA", carpetas=carpetas, asunto=asunto)
+ficha_de(nombre, datos, "auto", carpetas=carpetas, asunto=asunto)
 ```
 
 **Varios archivos a la vez:** `fichas_de([(nombre, datos), ...], plantilla, **opciones)`
@@ -318,7 +338,8 @@ nombre con un 400 seco. Nos costó el 20% de una migración.
 | `equivalencias.py` | nombre de carpeta a nombre de carpeta |
 | `plantillas.py` | las dos estructuras. Se sustituyen para adaptarlo a otra casa |
 | `archivar.py` | une las dos mitades |
-| `expediente.py` | a qué caso pertenece: asunto, nombre del archivo, Index y apellido |
+| `expediente.py` | el Index en todas sus formas y el nombre de las carpetas de caso |
+| `reglas.py` · `reglas_ruteo.toml` | a qué caso va un documento: las reglas, en un archivo |
 | `ficha.py` | la línea de JSONL de un archivo, y la cabecera del expediente |
 
 ## Qué lee
