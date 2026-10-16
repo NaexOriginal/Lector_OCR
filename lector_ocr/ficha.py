@@ -96,8 +96,9 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
                 **_campos_caso(_caso(carpetas, "", nombre, asunto, reglas))}
 
     extension = nombre.rsplit(".", 1)[-1].lower() if "." in nombre else ""
+    calidad: dict = {}
     try:
-        texto, fallo, con_que = leer_con_detalle(extension, datos, paginas)
+        texto, fallo, con_que = leer_con_detalle(extension, datos, paginas, extras=calidad)
     except Exception as error:  # noqa: BLE001
         return {**base, "was_read": False, "read_with": None,
                 "not_read_because": f"{type(error).__name__}: {error}"[:120],
@@ -120,6 +121,11 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
         "was_read": bool(texto.strip()),
         "read_with": con_que or None,
         "not_read_because": fallo or None,
+        # PASO 2: si alguna pagina quedo sin texto fiable tras el reintento. Solo lo
+        # dan los lectores con OCR (PDF e imagen); en el resto no aplica y va False.
+        "ocr_warning": bool(calidad.get("ocr_warning")),
+        "ocr_pages_failed": calidad.get("pages_failed") or None,
+        "pages": calidad.get("pages_by_status") or None,
         "document_type": destino.tipo or None,
         "template": plantilla,
         "goes_to": destino.carpeta or None,

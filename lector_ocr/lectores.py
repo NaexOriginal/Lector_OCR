@@ -31,7 +31,7 @@ from html.parser import HTMLParser
 
 import pypdf
 
-from . import ocr
+from . import calidad, ocr
 
 
 # Tope de paginas SOLO para el OCR. None = el mismo que el general.
@@ -58,14 +58,14 @@ class Lector(ABC):
 
 
 class LectorPDF(Lector):
-    """PDFs, en tres intentos que van de lo barato a lo caro.
+    """PDFs, en tres intentos que van de lo barato a lo caro, PAGINA A PAGINA.
 
         1. pypdf     milisegundos. Resuelve la mayoria de los PDF del arbol.
         2. PyMuPDF   tambien instantaneo, y abre archivos que pypdf no sabe abrir:
                      fuentes raras, PDF mal construidos, formularios.
-        3. OCR       uno a tres segundos por pagina. Solo si los dos anteriores
-                     devolvieron vacio, porque entonces no hay capa de texto y el
-                     papel es, literalmente, una foto.
+        3. OCR       uno a tres segundos por pagina. Solo en las paginas cuya capa
+                     de texto no sirve, con un reintento y aviso si sigue fallando
+                     (ver calidad.py).
 
     El orden no es preferencia: el tercer paso cuesta mil veces mas que el primero,
     y hacerlo sin haber descartado los otros dos serian horas tiradas.
@@ -77,8 +77,12 @@ class LectorPDF(Lector):
         texto, motivo, _ = self.leer_detalle(datos, paginas)
         return texto, motivo
 
-    def leer_detalle(self, datos: bytes, paginas: int) -> tuple[str, str, str]:
+    def leer_detalle(self, datos: bytes, paginas: int,
+                     extras: dict | None = None) -> tuple[str, str, str]:
         """Como `leer`, y ademas CUAL de los escalones dio el texto.
+
+        En `extras` deja el control de calidad por pagina (calidad.LecturaPDF.resumen):
+        ocr_warning, las paginas fallidas y el estado de cada una.
 
         Saberlo importa para revisar: un texto que viene de la capa nativa es fiel,
         y uno que viene del OCR puede traer erratas -- 'Marc Mouzon' leido como
@@ -107,17 +111,11 @@ class LectorPDF(Lector):
         except Exception:
             texto = ""  # que no abra con pypdf no quiere decir que no abra con nada
 
+        # El documento entero solo se mira para saber si es un PORTFOLIO: sus paginas
+        # no se rasterizan, el contenido son los adjuntos. Si la capa de texto entera
+        # es plausible no puede serlo (necesita_ocr lo reconoce por su portada).
         hace_falta, motivo_ocr = ocr.necesita_ocr(texto, leidas)
-        if not hace_falta:
-            return texto, "", "pypdf (text layer)"
-
-        del_otro = ocr.texto_sin_ocr(datos, paginas)
-        if del_otro.strip() and not ocr.necesita_ocr(del_otro, leidas)[0]:
-            return del_otro, "", "PyMuPDF (text layer)"
-
-        # Un portfolio no se rasteriza: sus paginas no tienen nada. El contenido
-        # son los adjuntos, y cada uno es un archivo con su propio formato.
-        adjuntos = ocr.adjuntos_de_portfolio(datos)
+        adjuntos = ocr.adjuntos_de_portfolio(datos) if hace_falta else []
         if adjuntos:
             partes, leidos = [], []
             for nombre, contenido in adjuntos:
@@ -144,16 +142,19 @@ class LectorPDF(Lector):
         # trece minutos. Solo el 21,7% necesita OCR, asi que separar los dos topes
         # deja completo el 78,3% que se lee de la capa de texto y acota lo caro.
         tope = PAGINAS_OCR if PAGINAS_OCR is not None else paginas
-        texto_ocr, motivo, con_que = ocr.texto_de_pdf(datos, tope)
-        if texto_ocr.strip():
+        lectura = calidad.leer_pdf_por_paginas(datos, paginas, tope)
+        if extras is not None:
+            extras.update(lectura.resumen())
+            extras["pages"] = [p.resumen() for p in lectura.paginas]
+        if lectura.texto.strip():
             # El nombre del motor lo dice ocr.py, no se escribe aqui: con dos
             # motores disponibles, escribirlo a mano seria mentir la mitad de las
             # veces.
-            return texto_ocr, "", f"{con_que} (rasterised pages)"
+            return lectura.texto, "", lectura.con_que
 
         # Ni la capa de texto servia ni el OCR pudo. Se devuelve por que se
         # intento el OCR, que explica mas que 'unreadable' a secas.
-        return "", motivo or motivo_ocr, ""
+        return "", lectura.motivo or motivo_ocr, ""
 
 
 class LectorImagen(Lector):
@@ -170,8 +171,15 @@ class LectorImagen(Lector):
         texto, motivo, _ = ocr.texto_de_imagen(datos)
         return texto, motivo
 
-    def leer_detalle(self, datos: bytes, paginas: int) -> tuple[str, str, str]:
+    def leer_detalle(self, datos: bytes, paginas: int,
+                     extras: dict | None = None) -> tuple[str, str, str]:
+        # La imagen es un documento de una pagina y ya trae su segundo intento
+        # (recortar el papel y leer otra vez, en ocr.texto_de_imagen). Si con eso no
+        # sale texto, lleva el mismo aviso que una pagina fallida de un PDF.
         texto, motivo, con_que = ocr.texto_de_imagen(datos)
+        if extras is not None:
+            extras.update({"ocr_warning": not texto.strip(), "pages_total": 1,
+                           "pages_failed": [] if texto.strip() else [1]})
         return texto, motivo, f"{con_que} (image)" if con_que else ""
 
 

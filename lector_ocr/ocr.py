@@ -432,7 +432,20 @@ def _flojo(texto: str) -> bool:
 def leer_imagen(imagen, enderezar: bool = True, agrandar: bool = False,
                 lado_minimo: int = LADO_MINIMO,
                 psm: int = POR_DEFECTO) -> tuple[str, str]:
-    """(texto, con que motor se leyo). El unico sitio donde se decide quien lee.
+    """(texto, con que motor se leyo). Ver leer_imagen_detalle."""
+    texto, con_que, _ = leer_imagen_detalle(imagen, enderezar, agrandar, lado_minimo, psm)
+    return texto, con_que
+
+
+def leer_imagen_detalle(imagen, enderezar: bool = True, agrandar: bool = False,
+                        lado_minimo: int = LADO_MINIMO,
+                        psm: int = POR_DEFECTO) -> tuple[str, str, float | None]:
+    """(texto, con que motor se leyo, confianza media). El unico sitio donde se decide
+    quien lee.
+
+    La confianza es la de Paddle (0 a 1) y None si leyo Tesseract, que no la da. Va
+    aparte porque el control de calidad por pagina la necesita como numero, y dentro
+    de 'read_with' solo era una cadena.
 
     Devuelve el nombre del motor porque 'read_with' tiene que seguir diciendo la
     verdad: un texto de Paddle y uno de Tesseract fallan de formas distintas, y
@@ -452,11 +465,11 @@ def leer_imagen(imagen, enderezar: bool = True, agrandar: bool = False,
     if MOTOR == "paddle":
         texto, detalle = paddle_ocr.leer(imagen)
         _anotar_error(detalle)
-        return texto, _marca_paddle(detalle)
+        return texto, _marca_paddle(detalle), _confianza(detalle)
 
     texto = _de_imagen(imagen, enderezar=False, agrandar=False, psm=psm)
     if MOTOR == "tesseract" or not _flojo(texto):
-        return texto, "Tesseract OCR"
+        return texto, "Tesseract OCR", None
 
     # auto: Tesseract no saco nada legible, se prueba con el otro.
     rescatado, detalle = paddle_ocr.leer(imagen)
@@ -464,8 +477,40 @@ def leer_imagen(imagen, enderezar: bool = True, agrandar: bool = False,
         # Ninguno pudo. Se queda lo de Tesseract, que es lo que se venia haciendo,
         # y el motivo lo dira quien llama. Si Paddle ni siquiera esta instalado,
         # eso viene en detalle['error'] y no se convierte en un fallo silencioso.
-        return texto, "Tesseract OCR"
-    return rescatado, _marca_paddle(detalle) + " (rescued after Tesseract)"
+        return texto, "Tesseract OCR", None
+    return (rescatado, _marca_paddle(detalle) + " (rescued after Tesseract)",
+            _confianza(detalle))
+
+
+def _confianza(detalle: dict) -> float | None:
+    """La confianza media de Paddle, o None si no leyo nada (o fallo)."""
+    if detalle.get("error") or not detalle.get("fragmentos"):
+        return None
+    return float(detalle["confianza_media"])
+
+
+# Una pagina EN BLANCO no es una pagina ilegible. Los escaneos traen el reverso
+# vacio de cada hoja y las producciones meten hojas de separacion: si se contaran
+# como fallos, casi todo escaneo saldria con aviso de OCR y el aviso dejaria de
+# significar nada.
+#
+# El corte es la fraccion de pixeles oscuros. Una sola linea de texto en una carta a
+# 300 DPI son unos 11.000 pixeles de tinta de 8,4 millones, el 0,13%; el umbral
+# queda por debajo para que una pagina con una linea NO cuente como blanca.
+# SIN MEDIR sobre el arbol todavia: calibrarlo con paginas reales antes de fiarse.
+TINTA_MINIMA = 0.0005
+OSCURO = 128
+
+
+def pagina_en_blanco(imagen) -> bool:
+    """Si la imagen no tiene tinta: ni texto ni nada que se le parezca."""
+    try:
+        import numpy as np
+        from PIL import ImageOps
+    except ImportError:
+        return False   # sin numpy no se sabe; ante la duda, no es blanca
+    gris = np.asarray(ImageOps.grayscale(imagen))
+    return float((gris < OSCURO).mean()) < TINTA_MINIMA
 
 
 def motor_disponible() -> tuple[bool, str]:
@@ -648,6 +693,26 @@ def texto_de_imagen(datos: bytes, minimo: int = MINIMO_ACEPTABLE) -> tuple[str, 
     return texto, "", con_que
 
 
+def rasterizar(pagina, dpi: int = DPI):
+    """Una pagina de PyMuPDF -> imagen de PIL, lista para el OCR.
+
+    LA PAGINA VA DIRECTA A PIL, SIN PASAR POR PNG. Codificar la pagina en PNG y volver
+    a abrirla costaba 0,54 s por pagina a 300 DPI, mas que el propio OCR; directa son
+    0,08 s y la imagen es la misma (PNG no pierde nada). Y las paginas ENORMES (planos,
+    fotos escaneadas a lo grande) se bajan de DPI hasta LIMITE_PIXELES: antes
+    Image.open las rechazaba con DecompressionBombError y el archivo quedaba sin leer.
+    """
+    from PIL import Image
+
+    ancho, alto = pagina.rect.width / 72 * dpi, pagina.rect.height / 72 * dpi
+    if ancho * alto > LIMITE_PIXELES:
+        dpi = max(36, int(dpi * (LIMITE_PIXELES / (ancho * alto)) ** 0.5))
+    pixeles = pagina.get_pixmap(dpi=dpi, alpha=False)
+    modo = {1: "L", 3: "RGB"}.get(pixeles.n)
+    return (Image.frombytes(modo, (pixeles.width, pixeles.height), pixeles.samples)
+            if modo else Image.open(io.BytesIO(pixeles.tobytes("png"))))
+
+
 def texto_de_pdf(datos: bytes, paginas: int) -> tuple[str, str, str]:
     """Un PDF escaneado -> (texto, motivo, con que se leyo).
 
@@ -660,27 +725,12 @@ def texto_de_pdf(datos: bytes, paginas: int) -> tuple[str, str, str]:
     if not puede:
         return "", motivo, ""
     try:
-        from PIL import Image
-
         pymupdf = _pymupdf()
         partes, motores = [], []
         with pymupdf.open(stream=datos, filetype="pdf") as documento:
             tope = len(documento) if paginas <= 0 else max(paginas, 1)
             for pagina in documento[:tope]:
-                # LA PAGINA VA DIRECTA A PIL, SIN PASAR POR PNG. Codificar la pagina en
-                # PNG y volver a abrirla costaba 0,54 s por pagina a 300 DPI, mas que el
-                # propio OCR; directa son 0,08 s y la imagen es la misma (PNG no pierde
-                # nada). Y las paginas ENORMES (planos, fotos escaneadas a lo grande) se
-                # bajan de DPI hasta LIMITE_PIXELES: antes Image.open las rechazaba con
-                # DecompressionBombError y el archivo quedaba sin leer.
-                ancho, alto = pagina.rect.width / 72 * DPI, pagina.rect.height / 72 * DPI
-                dpi = DPI if ancho * alto <= LIMITE_PIXELES else max(
-                    36, int(DPI * (LIMITE_PIXELES / (ancho * alto)) ** 0.5))
-                pixeles = pagina.get_pixmap(dpi=dpi, alpha=False)
-                modo = {1: "L", 3: "RGB"}.get(pixeles.n)
-                imagen = (Image.frombytes(modo, (pixeles.width, pixeles.height), pixeles.samples)
-                          if modo else Image.open(io.BytesIO(pixeles.tobytes("png"))))
-                with imagen:
+                with rasterizar(pagina) as imagen:
                     # Ya viene a 300 DPI, asi que no hay que ampliarla; lo que si
                     # puede venir es de lado, y eso el OCR no lo arregla solo.
                     trozo, con_que = leer_imagen(imagen, enderezar=True,
