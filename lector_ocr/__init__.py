@@ -10,6 +10,7 @@ Dos mitades que se usan juntas o por separado:
     LEER        la cascada pypdf -> PyMuPDF -> portfolio -> OCR, con dos motores
     ARCHIVAR    de que tipo es el documento y adonde va en cada plantilla
     EXPEDIENTE  a que caso pertenece, con las reglas de reglas_ruteo.toml
+    RECEPCION   la clave del documento (tribunal, caso, numero) y 'gana la primera copia'
 
 `con_que` y `se_decidio` no son decorativos: sin ellos no se sabe a quien atribuir
 un acierto ni un error, y un digito mal leido por OCR se confunde con uno mal
@@ -22,11 +23,13 @@ from .expediente import (Identificacion, identificar, indices_del_documento, ind
 from .ficha import cabecera, enmascarar, ficha_de, fichas_de
 from .lectores import (COMO_SE_LEE, extensiones_soportadas, leer_con_detalle,
                        lector_para, registrar)
+from .recepcion import Clave, RegistroDeClaves, clave_del_documento
 from . import (clasificacion, equivalencias, expediente, ficha, ocr, paddle_ocr, plantillas,
-               reglas)
+               recepcion, reglas)
 
-__all__ = ["COMO_SE_LEE", "Destino", "Identificacion", "cabecera", "clasificacion",
-           "donde_archivar", "enmascarar", "equivalencias", "expediente",
-           "extensiones_soportadas", "ficha", "ficha_de", "fichas_de", "identificar",
-           "indices_del_documento", "indices_en", "leer_con_detalle", "lector_para", "ocr",
-           "paddle_ocr", "plantilla_de", "plantillas", "reglas", "registrar"]
+__all__ = ["COMO_SE_LEE", "Clave", "Destino", "Identificacion", "RegistroDeClaves", "cabecera",
+           "clasificacion", "clave_del_documento", "donde_archivar", "enmascarar",
+           "equivalencias", "expediente", "extensiones_soportadas", "ficha", "ficha_de",
+           "fichas_de", "identificar", "indices_del_documento", "indices_en",
+           "leer_con_detalle", "lector_para", "ocr", "paddle_ocr", "plantilla_de",
+           "plantillas", "recepcion", "reglas", "registrar"]
