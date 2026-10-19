@@ -13,6 +13,7 @@ Dos mitades que se usan juntas o por separado:
     RECEPCION   la clave del documento (tribunal, caso, numero) y 'gana la primera copia'
     CALIDAD     cada pagina con texto utilizable, un reintento y ocr_warning si no
     LIMPIEZA    reglas 1 a 4 sobre el texto leido, antes de extraer nada
+    EXTRACCION  caratula (demandantes y demandados), quien lo manda y las fechas
 
 `con_que` y `se_decidio` no son decorativos: sin ellos no se sabe a quien atribuir
 un acierto ni un error, y un digito mal leido por OCR se confunde con uno mal
@@ -25,14 +26,16 @@ from .expediente import (Identificacion, identificar, indices_del_documento, ind
 from .ficha import cabecera, enmascarar, ficha_de, fichas_de
 from .lectores import (COMO_SE_LEE, extensiones_soportadas, leer_con_detalle,
                        lector_para, registrar)
+from .extraccion import Extraccion, extraer
 from .limpieza import limpiar_documento, limpiar_ficha
 from .recepcion import Clave, RegistroDeClaves, clave_del_documento
-from . import (calidad, clasificacion, equivalencias, expediente, ficha, limpieza, ocr,
-               paddle_ocr, plantillas, recepcion, reglas)
+from . import (calidad, clasificacion, equivalencias, expediente, extraccion, ficha, limpieza,
+               ocr, paddle_ocr, plantillas, recepcion, reglas)
 
-__all__ = ["COMO_SE_LEE", "Clave", "Destino", "Identificacion", "RegistroDeClaves", "cabecera",
-           "calidad", "clasificacion", "clave_del_documento", "donde_archivar", "enmascarar",
-           "equivalencias", "expediente", "extensiones_soportadas", "ficha", "ficha_de",
+__all__ = ["COMO_SE_LEE", "Clave", "Destino", "Extraccion", "Identificacion", "RegistroDeClaves",
+           "cabecera", "calidad", "clasificacion", "clave_del_documento", "donde_archivar",
+           "enmascarar", "equivalencias", "expediente", "extensiones_soportadas", "extraccion",
+           "extraer", "ficha", "ficha_de",
            "fichas_de", "identificar", "indices_del_documento", "indices_en",
            "leer_con_detalle", "lector_para", "limpiar_documento", "limpiar_ficha", "limpieza",
            "ocr", "paddle_ocr", "plantilla_de", "plantillas", "recepcion", "reglas",

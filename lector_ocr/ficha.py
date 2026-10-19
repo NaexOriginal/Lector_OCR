@@ -29,7 +29,9 @@ from typing import Any, Iterable, Sequence
 
 from .archivar import PAGINAS, donde_archivar
 from .expediente import Identificacion, identificar, indices_del_documento
+from .extraccion import extraer
 from .limpieza import limpiar_documento
+from .recepcion import clave_del_documento
 from .lectores import leer_con_detalle
 
 # Un numero de la Seguridad Social de EE.UU. tal y como se escribe en un documento.
@@ -124,6 +126,11 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
     # seria un segundo OCR del mismo escaneo.
     destino = donde_archivar(nombre, datos, plantilla, PAGINAS,
                              texto=texto, con_que=con_que)
+    # PASO 4: caratula, remitente y fechas, sobre el mismo texto limpio. El tipo va
+    # para que una orden se atribuya a la corte aunque no se vea su firma.
+    extraido = extraer(texto, destino.tipo)
+    # PASO 1: la clave del documento y su numero, del aviso, el nombre y el sello.
+    clave = clave_del_documento(datos, extension, asunto=asunto, nombre_archivo=nombre)
     lleva_ssn = bool(SSN.search(texto))
     ficha = {
         **base,
@@ -144,6 +151,10 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
         # El del caso primero: los etiquetados ('INDEX NO.') y los de la caratula
         # van delante de los que el cuerpo cita de otros pleitos.
         "index_numbers": indices_del_documento(texto)[:10],
+        "document_key": clave.clave or None,
+        "doc_number": clave.numero or None,
+        "content_hash": clave.huella,
+        **extraido.campos(),
         **_campos_caso(caso),
         **limpio.campos(),
         "extracted_text_length": len(texto),
