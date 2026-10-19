@@ -15,6 +15,7 @@ Dos mitades que se usan juntas o por separado:
     LIMPIEZA    reglas 1 a 4 sobre el texto leido, antes de extraer nada
     EXTRACCION  caratula (demandantes y demandados), quien lo manda y las fechas
     UBICAR      la carpeta del matter con las reglas del Docs Agent, y el renombrado
+    SUBCARPETA  la seccion del matter por tipo, con las reglas de Mario (plantillas A/B/C)
 
 `con_que` y `se_decidio` no son decorativos: sin ellos no se sabe a quien atribuir
 un acierto ni un error, y un digito mal leido por OCR se confunde con uno mal
@@ -32,7 +33,7 @@ from .limpieza import limpiar_documento, limpiar_ficha
 from .recepcion import Clave, RegistroDeClaves, clave_del_documento
 from .ubicar import Ubicacion, ubicar
 from . import (calidad, clasificacion, equivalencias, expediente, extraccion, ficha, limpieza,
-               ocr, paddle_ocr, plantillas, recepcion, reglas)
+               ocr, paddle_ocr, plantillas, recepcion, reglas, subcarpeta)
 
 __all__ = ["COMO_SE_LEE", "Clave", "Destino", "Extraccion", "Identificacion", "RegistroDeClaves",
            "cabecera", "calidad", "clasificacion", "clave_del_documento", "donde_archivar",
@@ -41,4 +42,4 @@ __all__ = ["COMO_SE_LEE", "Clave", "Destino", "Extraccion", "Identificacion", "R
            "fichas_de", "identificar", "indices_del_documento", "indices_en",
            "leer_con_detalle", "lector_para", "limpiar_documento", "limpiar_ficha", "limpieza",
            "ocr", "paddle_ocr", "plantilla_de", "plantillas", "recepcion", "reglas",
-           "registrar", "Ubicacion", "ubicar"]
+           "registrar", "subcarpeta", "Ubicacion", "ubicar"]

@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .archivar import PAGINAS, donde_archivar
 from .expediente import indices_del_documento
@@ -33,6 +33,7 @@ from .extraccion import extraer
 from .limpieza import limpiar_documento
 from .recepcion import clave_del_documento
 from .lectores import leer_con_detalle
+from .subcarpeta import elegir
 from .ubicar import ubicar
 
 # Un numero de la Seguridad Social de EE.UU. tal y como se escribe en un documento.
@@ -64,7 +65,9 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
              subcarpeta: str = "", paginas: int = PAGINAS_POR_DEFECTO,
              con_texto: bool = True, enmascarar_ssn: bool = False,
              max_mb: float = MAX_MB, carpetas: Sequence[Any] | None = None,
-             asunto: str = "", demandados: Mapping[str, Sequence[str]] | None = None) -> dict:
+             asunto: str = "", demandados: Mapping[str, Sequence[str]] | None = None,
+             secciones: Mapping[str, Sequence[str]] | Callable[[Any], Sequence[str]] | None = None
+             ) -> dict:
     """Todo lo que se sabe de un archivo, listo para volcar como una linea de JSONL.
 
     `datos` es el contenido en bytes. `plantilla` decide en que estructura se busca
@@ -78,6 +81,13 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
     matter en HubSpot (ID interno -> nombres), para la regla 3 del complaint. Con
     plantilla="auto", la plantilla sale de ese caso. Sin `carpetas` no se busca caso,
     pero `index_numbers` va siempre.
+
+    Con caso encontrado, la subcarpeta sale de las reglas de Mario (subcarpeta.py):
+    `template` es A, B o C y `goes_to` es una seccion que el matter YA tiene. Para eso
+    hacen falta sus `secciones`: un dict carpeta -> subcarpetas de primer nivel, o una
+    funcion que las da a partir de la Ubicacion. TODAS, tambien las vacias: con solo
+    las que tienen archivos, una seccion vacia parece no existir y el documento se va a
+    pendientes. Sin caso, `goes_to` es el de clasificacion.py, como siempre.
 
     Los campos de control van primero y el texto al final, a proposito: es lo mas
     largo con diferencia, y quien abra el fichero quiere ver antes de que va el
@@ -141,6 +151,17 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
         if plantilla != previa:
             destino = donde_archivar(nombre, datos, plantilla, PAGINAS, texto=texto,
                                      con_que=con_que)
+    # PASO 6: con matter, la seccion por las reglas de Mario, entre las que el matter ya
+    # tiene. Sin matter no hay secciones que mirar: queda la de clasificacion.py.
+    seccion = None
+    if caso is not None and caso.carpeta:
+        seccion = elegir(destino.tipo, _secciones_de(secciones, caso),
+                         id_interno=caso.id_interno,
+                         del_cliente=_lo_manda_el_cliente(extraido.remitente, caso))
+    destino_campos = (seccion.campos() if seccion else
+                      {"template": plantilla, "goes_to": destino.carpeta or None})
+    if seccion:
+        destino_campos["template"] = destino_campos.pop("section_template")
     lleva_ssn = bool(SSN.search(texto))
     ficha = {
         **base,
@@ -153,8 +174,7 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
         "ocr_pages_failed": calidad.get("pages_failed") or None,
         "pages": calidad.get("pages_by_status") or None,
         "document_type": destino.tipo or None,
-        "template": plantilla,
-        "goes_to": destino.carpeta or None,
+        **destino_campos,
         "decided_by": destino.se_decidio or None,
         "decided_because": destino.evidencia or None,
         "contains_ssn": lleva_ssn,
@@ -170,6 +190,25 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
     if con_texto:
         ficha["extracted_text"] = (enmascarar(texto) if enmascarar_ssn else texto) or None
     return ficha
+
+
+def _secciones_de(secciones, caso) -> Sequence[str] | None:
+    """Las subcarpetas del matter encontrado, vengan como dict o como funcion."""
+    if secciones is None:
+        return None
+    if callable(secciones):
+        return secciones(caso)
+    return secciones.get(caso.carpeta)
+
+
+def _lo_manda_el_cliente(remitente, caso) -> bool:
+    """Un correo del propio cliente: su apellido esta en quien lo manda."""
+    if not remitente.filer_name or not caso.carpeta:
+        return False
+    from .expediente import descomponer, normalizar
+
+    apellidos = descomponer(caso.carpeta).apellidos
+    return bool(apellidos) and apellidos <= set(normalizar(remitente.filer_name).split())
 
 
 def _campos_caso(carpetas, *, como_objeto: bool = False, **opciones):
