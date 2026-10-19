@@ -94,6 +94,14 @@ TIPOS: list[Tipo] = [
     Tipo("Pro hac vice motion",
          _p(r"pro hac vice"),
          "03_Litigation/Motions", "09_Motions/Pro Hac Vice Motions", "clear"),
+    # Reglas de Mario del 19-oct (pedido de M. Mikhaylova): va con las estipulaciones.
+    # DELANTE de la peticion de aplazamiento y del 'Stipulation' generico. Exige
+    # 'stipulat...' cerca de 'adjourn...': una orden que dice 'adjourned on consent' no
+    # es una estipulacion.
+    Tipo("Stipulation of adjournment",
+         _p(r"stipulat\w*\b.{0,250}\badjourn|stipulation (of|to|for) adjourn"),
+         "03_Litigation", "10_Stipulations", "proposed",
+         en_nombre=_p(r"stip\w*.{0,20}adj")),
     Tipo("Adjournment request",
          _p(r"request .{0,25}adjourn|letter motion .{0,25}adjourn|adjournment request"),
          "03_Litigation/Motions", "09_Motions/Adjournment Requests", "proposed"),
@@ -262,6 +270,23 @@ TIPOS: list[Tipo] = [
          en_nombre=_p(r"\border\b|\bdecision\b")),
 
     # --- mociones genericas (van despues de todas las especificas) ------------
+    # Reglas de Mario del 19-oct. La replica va DELANTE del memorandum y de la
+    # affirmation: 'REPLY AFFIRMATION IN SUPPORT' tambien dice 'affirmation in support'
+    # y 'REPLY MEMORANDUM OF LAW' tambien dice 'memorandum of law'.
+    # Sin 'in further support of' suelto: lo dicen tambien la affidavit of service que
+    # lista lo notificado y la orden que resuelve la mocion (Mario, seccion 5: el
+    # documento que CITA otro se clasificaba como el citado).
+    Tipo("Reply / Affirmation in reply",
+         _p(r"\breply (affirmation|affidavit|declaration|memorandum( of law)?|brief)\b"
+            r"|(affirmation|affidavit|declaration|memorandum of law) in (further support|reply)\b"),
+         "03_Litigation/Motions", "09_Motions", "proposed",
+         en_nombre=_p(r"\breply\b")),
+    # DELANTE de la mocion de summary judgment, que siempre nombra.
+    Tipo("Statement of material facts",
+         _p(r"statement of (undisputed )?material facts|counter-?statement of (undisputed )?"
+            r"(material )?facts|(local (civil )?)?rule 56\.1 statement|202\.8-?g"),
+         "03_Litigation/Motions", "09_Motions", "proposed",
+         en_nombre=_p(r"\b56\.1\b|material facts|\bsumf\b|\bsmf\b")),
     Tipo("Summary judgment motion",
          _p(r"summary judgment"),
          "03_Litigation/Motions", "09_Motions", "clear",
@@ -291,6 +316,16 @@ TIPOS: list[Tipo] = [
          "01_General", None, "clear",
          en_nombre=_p(r"affidavit of compliance|smoke detector|affidavit of title"
                       r"|\brp-?5217\b|\btp-?584\b")),
+    # Reglas de Mario del 19-oct: la declaracion federal (28 U.S.C. 1746) con las
+    # mociones. DETRAS de la notice of motion, que en sus primeras lineas suele decir
+    # 'upon the declaration of...'; delante de la affirmation generica. Sin 'I declare
+    # under penalty of perjury' suelto: lo lleva tambien el informe de robo de identidad
+    # de la FTC, que es un documento del cliente y no va con las mociones.
+    Tipo("Declaration",
+         _p(r"\bdeclaration (of [a-z .,'-]{2,50}? )?in (support|opposition)"
+            r"|28 u\.?\s?s\.?\s?c\.?\s*§*\s*1746"),
+         "03_Litigation/Motions", "09_Motions", "proposed",
+         en_nombre=_p(r"\bdeclaration\b|\bdecl\b")),
     Tipo("Affirmation in support or opposition",
          _p(r"affirmation in (support|opposition)|affidavit in (support|opposition)"),
          "03_Litigation/Motions", "09_Motions", "proposed",
@@ -457,8 +492,16 @@ QUE_HACE: dict[str, str] = {
         'Defendant asks the court to throw out the complaint before answering it.',
     'Pro hac vice motion':
         'An out-of-state attorney asks to be admitted to appear in this one case.',
+    'Stipulation of adjournment':
+        'Both sides agree to move a scheduled date (a motion, a conference, a deadline) to a later one.',
     'Adjournment request':
         'A party asks the court to push back a deadline or a scheduled appearance.',
+    'Reply / Affirmation in reply':
+        "The moving party's last word on a motion, answering the other side's opposition.",
+    'Statement of material facts':
+        'The numbered list of facts a party says are undisputed, filed with a summary judgment motion.',
+    'Declaration':
+        'A sworn statement under 28 U.S.C. 1746 supporting or opposing a motion in federal court.',
     'Amended complaint':
         'A corrected or expanded version of the complaint that replaces the original.',
     'Summons and complaint':

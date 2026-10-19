@@ -9,7 +9,8 @@
     s.pendiente    # False
     s.razon        # "type 'Notice of motion' goes to 09_Motions in template A"
 
-LAS REGLAS SON LAS DE MARIO (correccion_mario/2026-10-19_filing-rules.md), medidas
+LAS REGLAS SON LAS DE MARIO (correccion_mario/2026-10-19_filing-rules 1.md, la version
+corregida del mismo dia, con cuatro tipos mas), medidas
 sobre 42.147 documentos clasificados. Lo que cambian frente a clasificacion.py:
 
     TRES PLANTILLAS, NO DOS. A (litigio / FCRA), B (foreclosure: cuatro secciones, y
@@ -88,7 +89,10 @@ REGLAS: dict[str, dict[str, list[str]]] = {
         "Notice of motion", "Summary judgment motion", "Rule 12 motion to dismiss",
         "Opposition to motion to dismiss", "Memorandum of law", "Order to show cause",
         "Pro hac vice motion", "Pre-motion conference letter", "Response to PMC letter",
-        "Itemized damages", "Affirmation in support or opposition")},
+        "Itemized damages", "Affirmation in support or opposition",
+        # Version del 19-oct (M. Mikhaylova). Mario las corrigio a la plantilla B: la
+        # peticion decia 'C (foreclosure)', pero C es la de QWR y no tiene 03_Litigation.
+        "Declaration", "Reply / Affirmation in reply", "Statement of material facts")},
     # Discovery
     **{t: _DISCOVERY for t in (
         "Discovery demands", "Responses to discovery demands", "Discovery deficiency letter",
@@ -113,6 +117,10 @@ REGLAS: dict[str, dict[str, list[str]]] = {
     "Notice of settlement": _fila(["12_Settlement Documents"], _LITIGIO_B, ["10_Notices"]),
     "Stipulation": _ESTIPULACION, "Stipulation of dismissal": _ESTIPULACION,
     "Stipulation of extension of time": _ESTIPULACION,
+    "Stipulation of adjournment": _ESTIPULACION,        # version del 19-oct
+    # PENDIENTE (Mario, 19-oct): 'Affirmation / Affidavit' a mociones. No se construye
+    # hasta que digan cual de las tres lecturas es: tomado al pie de la letra moveria
+    # 2.637 documentos que no son mociones, entre ellos todo Affidavit of service.
     "Discontinuance": _AVISO, "Notice of dismissal": _AVISO,
     # Client financials
     **{t: _FINANZAS for t in (
