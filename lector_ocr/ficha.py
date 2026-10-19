@@ -29,6 +29,7 @@ from typing import Any, Iterable, Sequence
 
 from .archivar import PAGINAS, donde_archivar
 from .expediente import Identificacion, identificar, indices_del_documento
+from .limpieza import limpiar_documento
 from .lectores import leer_con_detalle
 
 # Un numero de la Seguridad Social de EE.UU. tal y como se escribe en un documento.
@@ -104,6 +105,14 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
                 "not_read_because": f"{type(error).__name__}: {error}"[:120],
                 **_campos_caso(_caso(carpetas, "", nombre, asunto, reglas))}
 
+    # PASO 3: SE LIMPIA ANTES DE EXTRAER. El caso, la subcarpeta, los index y los SSN
+    # salen del texto limpio, que es tambien el que se guarda: lo que decide y lo que
+    # queda escrito son el mismo texto. `leido` es lo que importa para was_read: si la
+    # regla 1 vacia el texto, el archivo se leyo igual.
+    leido = bool(texto.strip())
+    limpio = limpiar_documento(texto, con_que, control_por_pagina="ocr_warning" in calidad)
+    texto = limpio.texto
+
     # PRIMERO EL CASO, DESPUES LA SUBCARPETA: la plantilla (Foreclosure o FCRA) sale
     # del ID interno del caso, y con la plantilla equivocada la subcarpeta seria de la
     # OTRA estructura, que en ese expediente no existe.
@@ -118,7 +127,7 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
     lleva_ssn = bool(SSN.search(texto))
     ficha = {
         **base,
-        "was_read": bool(texto.strip()),
+        "was_read": leido,
         "read_with": con_que or None,
         "not_read_because": fallo or None,
         # PASO 2: si alguna pagina quedo sin texto fiable tras el reintento. Solo lo
@@ -136,6 +145,7 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
         # van delante de los que el cuerpo cita de otros pleitos.
         "index_numbers": indices_del_documento(texto)[:10],
         **_campos_caso(caso),
+        **limpio.campos(),
         "extracted_text_length": len(texto),
     }
     if con_texto:
