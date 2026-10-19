@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .archivar import PAGINAS, donde_archivar
@@ -33,6 +33,7 @@ from .extraccion import extraer
 from .limpieza import limpiar_documento
 from .recepcion import clave_del_documento
 from .lectores import leer_con_detalle
+from .nombre import ORIGEN_MANUAL, nombre_estandar, sin_choque
 from .subcarpeta import elegir
 from .ubicar import ubicar
 
@@ -66,8 +67,9 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
              con_texto: bool = True, enmascarar_ssn: bool = False,
              max_mb: float = MAX_MB, carpetas: Sequence[Any] | None = None,
              asunto: str = "", demandados: Mapping[str, Sequence[str]] | None = None,
-             secciones: Mapping[str, Sequence[str]] | Callable[[Any], Sequence[str]] | None = None
-             ) -> dict:
+             secciones: Mapping[str, Sequence[str]] | Callable[[Any], Sequence[str]] | None = None,
+             origen: str = "", hoy: date | None = None,
+             existentes: Callable[[Any, str], Iterable[str]] | None = None) -> dict:
     """Todo lo que se sabe de un archivo, listo para volcar como una linea de JSONL.
 
     `datos` es el contenido en bytes. `plantilla` decide en que estructura se busca
@@ -88,6 +90,14 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
     funcion que las da a partir de la Ubicacion. TODAS, tambien las vacias: con solo
     las que tienen archivos, una seccion vacia parece no existir y el documento se va a
     pendientes. Sin caso, `goes_to` es el de clasificacion.py, como siempre.
+
+    El nombre con que se guarda sale de nombre.py: '{fecha} Doc {n} {tipo}, {remitente}',
+    con `original_name` al lado. `origen="manual"` (una carga manual) no se renombra ni
+    se mueve. `hoy` es la fecha para los documentos que no traen ninguna (por defecto,
+    la del dia). `existentes(ubicacion, seccion)` da los nombres que ya hay en esa
+    seccion, para no pisar ninguno ('... (2)'); sin el, no se comprueba.
+    `destination_path` es la ruta final dentro de Matters, o None si va a pendientes
+    sin carpeta.
 
     Los campos de control van primero y el texto al final, a proposito: es lo mas
     largo con diferencia, y quien abra el fichero quiere ver antes de que va el
@@ -112,7 +122,8 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
         # Sin texto, el caso sale solo del asunto, el nombre y el sello.
         return {**base, "was_read": False, "read_with": None, "not_read_because": motivo,
                 **claves, **_campos_caso(carpetas, clave=clave, asunto=asunto,
-                                         nombre_archivo=nombre, demandados=demandados)}
+                                         nombre_archivo=nombre, demandados=demandados),
+                **nombre_estandar(nombre, origen=origen).campos()}
 
     if not datos:
         return sin_leer("empty file (0 bytes)")
@@ -162,6 +173,18 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
                       {"template": plantilla, "goes_to": destino.carpeta or None})
     if seccion:
         destino_campos["template"] = destino_campos.pop("section_template")
+    # PASO 7: el nombre con que se guarda, y la ruta final. Sin matter no hay ruta: el
+    # documento va a pendientes.
+    rem = extraido.remitente
+    nuevo = nombre_estandar(nombre, tipo=destino.tipo, doc_number=clave.numero,
+                            fechas=extraido.campos()["dates_found"] or [], sent_by=rem.sent_by,
+                            filer_name=rem.filer_name, filer_firm=rem.firma, origen=origen,
+                            hoy=hoy)
+    ruta = None
+    if seccion is not None and origen != ORIGEN_MANUAL:
+        if existentes is not None:
+            nuevo.nombre = sin_choque(nuevo.nombre, existentes(caso, seccion.carpeta))
+        ruta = f"{caso.carpeta}/{seccion.carpeta}/{nuevo.nombre}"
     lleva_ssn = bool(SSN.search(texto))
     ficha = {
         **base,
@@ -175,6 +198,8 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
         "pages": calidad.get("pages_by_status") or None,
         "document_type": destino.tipo or None,
         **destino_campos,
+        **nuevo.campos(),
+        "destination_path": ruta,
         "decided_by": destino.se_decidio or None,
         "decided_because": destino.evidencia or None,
         "contains_ssn": lleva_ssn,
