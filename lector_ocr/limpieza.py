@@ -45,7 +45,11 @@ from datetime import datetime
 CARACTERES_ASIATICOS = re.compile(r"[一-鿿]+")
 CARACTERES_CONTROL_Y_UNICODE_ROTO = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f�]")
 LINEA_DE_RELLENO = re.compile(r"^[#*_\-=\s]{3,}$", re.MULTILINE)
-PALABRA_CORTADA_CON_GUION = re.compile(r"(\b[a-zA-Z]+)-\s*\n\s*([a-zA-Z]+\b)")
+# (?<!-): una palabra que EMPIEZA con guion no esta cortada, es '-against-', el
+# separador de la caratula. Sin esto 'Plaintiff, -against-\nU.S. BANK' salia
+# '-againstU.S. BANK' y la caratula quedaba sin demandados (paso 4). En app/limpieza
+# y en docket sigue pasando.
+PALABRA_CORTADA_CON_GUION = re.compile(r"(?<!-)(\b[a-zA-Z]+)-\s*\n\s*([a-zA-Z]+\b)")
 # UNICA DIFERENCIA CON app/limpieza: el saludo de una carta y las cabeceras de un
 # correo tambien van en su propio renglon. La clasificacion los reconoce al principio
 # de linea ('^dear', '^from:'), y la regla 3 los pegaba al renglon de antes -- la
