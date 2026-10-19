@@ -184,8 +184,15 @@ def _llenar(u: Ubicacion, caso: Caso) -> Ubicacion:
 def _indices_del_juzgado(clave, asunto: str, nombre_archivo: str) -> list[str]:
     """Los Index que pone el juzgado: el del sello o el aviso (paso 1), el del asunto y
     el del nombre del archivo de la bandeja (que sale de NYSCEF)."""
+    # El caso de la clave solo cuenta si salio del SELLO de verdad: en NYSCEF, cuando
+    # tambien esta la linea 'FILED: ... COUNTY CLERK' (de ahi el condado); en federal, del
+    # sello ECF o del asunto del aviso. Un 'INDEX NO.' suelto en la primera pagina puede
+    # ser la caratula de un escrito reutilizado de otro caso.
+    del_sello = clave is not None and clave.caso and (
+        (clave.tipo == "nyscef" and clave.tribunal)
+        or clave.se_decidio.get("caso") in ("el sello ECF", "el asunto"))
     salida: list[str] = []
-    for indice in ([clave.caso] if clave is not None and clave.caso else []) + \
+    for indice in ([clave.caso] if del_sello else []) + \
             indices_en(asunto) + indices_en(nombre_archivo):
         if indice and indice not in salida:
             salida.append(indice)
