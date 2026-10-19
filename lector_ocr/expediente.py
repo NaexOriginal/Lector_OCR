@@ -202,10 +202,16 @@ def descomponer(carpeta: str, id: str = "", creada: str = "") -> Caso:
     el ID y el indice son siempre los dos ultimos campos. Lo que no tiene esa forma
     no se adivina: queda todo en la base, sin ID ni indice.
     """
-    texto = str(carpeta).strip()
-    cerrado = texto.lower().startswith(PREFIJO_CERRADO)
-    if cerrado:
-        texto = texto[len(PREFIJO_CERRADO):]
+    # El espacio duro (caracter 160) parece un espacio y rompe toda comparacion: esta en
+    # nombres de carpeta y en dealnames de HubSpot. Las marcas de estado '[CLOSED]' y
+    # '[DROPPED]' no son parte del nombre: se quitan y cuentan como cerrado.
+    texto = re.sub(r"\s+", " ", str(carpeta).replace("\xa0", " ")).strip()
+    marca = re.search(r"\s*\[(?:CLOSED|DROPPED)\]\s*", texto, re.I)
+    if marca:
+        texto = (texto[:marca.start()] + " " + texto[marca.end():]).strip()
+    cerrado = bool(marca)
+    if texto.lower().startswith(PREFIJO_CERRADO):
+        texto, cerrado = texto[len(PREFIJO_CERRADO):], True
     partes = [p.strip() for p in texto.rsplit(" - ", 2)]
     if len(partes) == 3 and re.fullmatch(r"\d{3,7}", partes[1]):
         base, id_interno, crudo = partes

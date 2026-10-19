@@ -25,14 +25,15 @@ from __future__ import annotations
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from .archivar import PAGINAS, donde_archivar
-from .expediente import Identificacion, identificar, indices_del_documento
+from .expediente import indices_del_documento
 from .extraccion import extraer
 from .limpieza import limpiar_documento
 from .recepcion import clave_del_documento
 from .lectores import leer_con_detalle
+from .ubicar import ubicar
 
 # Un numero de la Seguridad Social de EE.UU. tal y como se escribe en un documento.
 SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
@@ -63,17 +64,18 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
              subcarpeta: str = "", paginas: int = PAGINAS_POR_DEFECTO,
              con_texto: bool = True, enmascarar_ssn: bool = False,
              max_mb: float = MAX_MB, carpetas: Sequence[Any] | None = None,
-             asunto: str = "", reglas=None) -> dict:
+             asunto: str = "", demandados: Mapping[str, Sequence[str]] | None = None) -> dict:
     """Todo lo que se sabe de un archivo, listo para volcar como una linea de JSONL.
 
     `datos` es el contenido en bytes. `plantilla` decide en que estructura se busca
     la carpeta destino ("Foreclosure", "FCRA" o "auto"). `subcarpeta` es donde esta
     el archivo, si se sabe.
 
-    `carpetas`, si se pasa, son las carpetas de caso (nombres, o dicts de Graph con
-    `name`, `id` y `createdDateTime`): entonces la ficha dice tambien A QUE CASO
-    pertenece el documento, aplicando las `reglas` (reglas_ruteo.toml si no se pasan)
-    sobre el `asunto` del correo, el nombre del archivo y lo que dice por dentro. Con
+    `carpetas`, si se pasa, son las carpetas de caso de las dos bibliotecas de Active
+    Matters (nombres, o dicts de Graph con `name`, `id` y `createdDateTime`): entonces
+    la ficha dice tambien A QUE CASO va el documento con las reglas del Docs Agent
+    (ubicar.py), y si hay que renombrar la carpeta. `demandados` son los de cada
+    matter en HubSpot (ID interno -> nombres), para la regla 3 del complaint. Con
     plantilla="auto", la plantilla sale de ese caso. Sin `carpetas` no se busca caso,
     pero `index_numbers` va siempre.
 
@@ -89,23 +91,29 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
     }
     # 0 BYTES NO ES 'SIN TEXTO': no hay nada que leer, y quien reintenta tiene que
     # saber que no va a cambiar. La frase es la que ya usa la lectura de Matters.
-    if not datos:
-        return {**base, "was_read": False, "read_with": None,
-                "not_read_because": "empty file (0 bytes)",
-                **_campos_caso(_caso(carpetas, "", nombre, asunto, reglas))}
-    if max_mb and tamano > max_mb:
-        return {**base, "was_read": False, "read_with": None,
-                "not_read_because": f"larger than {max_mb} MB",
-                **_campos_caso(_caso(carpetas, "", nombre, asunto, reglas))}
-
     extension = nombre.rsplit(".", 1)[-1].lower() if "." in nombre else ""
+    # PASO 1: la clave del documento y su numero, del aviso, el nombre y el sello. Va
+    # antes que todo: el Index del sello o del aviso es la regla 1 del paso 5.
+    clave = clave_del_documento(datos, extension, asunto=asunto, nombre_archivo=nombre)
+    claves = {"document_key": clave.clave or None, "doc_number": clave.numero or None,
+              "content_hash": clave.huella}
+
+    def sin_leer(motivo: str) -> dict:
+        # Sin texto, el caso sale solo del asunto, el nombre y el sello.
+        return {**base, "was_read": False, "read_with": None, "not_read_because": motivo,
+                **claves, **_campos_caso(carpetas, clave=clave, asunto=asunto,
+                                         nombre_archivo=nombre, demandados=demandados)}
+
+    if not datos:
+        return sin_leer("empty file (0 bytes)")
+    if max_mb and tamano > max_mb:
+        return sin_leer(f"larger than {max_mb} MB")
+
     calidad: dict = {}
     try:
         texto, fallo, con_que = leer_con_detalle(extension, datos, paginas, extras=calidad)
     except Exception as error:  # noqa: BLE001
-        return {**base, "was_read": False, "read_with": None,
-                "not_read_because": f"{type(error).__name__}: {error}"[:120],
-                **_campos_caso(_caso(carpetas, "", nombre, asunto, reglas))}
+        return sin_leer(f"{type(error).__name__}: {error}"[:120])
 
     # PASO 3: SE LIMPIA ANTES DE EXTRAER. El caso, la subcarpeta, los index y los SSN
     # salen del texto limpio, que es tambien el que se guarda: lo que decide y lo que
@@ -115,22 +123,24 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
     limpio = limpiar_documento(texto, con_que, control_por_pagina="ocr_warning" in calidad)
     texto = limpio.texto
 
-    # PRIMERO EL CASO, DESPUES LA SUBCARPETA: la plantilla (Foreclosure o FCRA) sale
-    # del ID interno del caso, y con la plantilla equivocada la subcarpeta seria de la
-    # OTRA estructura, que en ese expediente no existe.
-    caso = _caso(carpetas, texto, nombre, asunto, reglas)
+    # EL TIPO PRIMERO: el paso 5 lo necesita (solo el complaint renombra) y el 4 tambien
+    # (una orden la manda la corte). El tipo no depende de la plantilla; la subcarpeta
+    # si, y se recalcula abajo si el caso trae otra. Se clasifica con el texto que ya se
+    # leyo: leerlo otra vez seria un segundo OCR del mismo escaneo.
+    previa = PLANTILLA_SIN_CASO if plantilla == "auto" else plantilla
+    destino = donde_archivar(nombre, datos, previa, PAGINAS, texto=texto, con_que=con_que)
+    # PASO 4: caratula, remitente y fechas, sobre el mismo texto limpio.
+    extraido = extraer(texto, destino.tipo)
+    # PASO 5: la carpeta del matter. La plantilla (Foreclosure o FCRA) sale de su ID
+    # interno: con la equivocada la subcarpeta seria de la OTRA estructura.
+    caso = _campos_caso(carpetas, tipo=destino.tipo, texto=texto, clave=clave,
+                        caratula=extraido.caratula, asunto=asunto, nombre_archivo=nombre,
+                        demandados=demandados, como_objeto=True)
     if plantilla == "auto":
         plantilla = (caso.plantilla if caso else None) or PLANTILLA_SIN_CASO
-
-    # Se clasifica con el texto que ya se leyo (su principio): leerlo otra vez
-    # seria un segundo OCR del mismo escaneo.
-    destino = donde_archivar(nombre, datos, plantilla, PAGINAS,
-                             texto=texto, con_que=con_que)
-    # PASO 4: caratula, remitente y fechas, sobre el mismo texto limpio. El tipo va
-    # para que una orden se atribuya a la corte aunque no se vea su firma.
-    extraido = extraer(texto, destino.tipo)
-    # PASO 1: la clave del documento y su numero, del aviso, el nombre y el sello.
-    clave = clave_del_documento(datos, extension, asunto=asunto, nombre_archivo=nombre)
+        if plantilla != previa:
+            destino = donde_archivar(nombre, datos, plantilla, PAGINAS, texto=texto,
+                                     con_que=con_que)
     lleva_ssn = bool(SSN.search(texto))
     ficha = {
         **base,
@@ -151,11 +161,9 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
         # El del caso primero: los etiquetados ('INDEX NO.') y los de la caratula
         # van delante de los que el cuerpo cita de otros pleitos.
         "index_numbers": indices_del_documento(texto)[:10],
-        "document_key": clave.clave or None,
-        "doc_number": clave.numero or None,
-        "content_hash": clave.huella,
+        **claves,
         **extraido.campos(),
-        **_campos_caso(caso),
+        **(caso.campos() if caso else {}),
         **limpio.campos(),
         "extracted_text_length": len(texto),
     }
@@ -164,27 +172,13 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
     return ficha
 
 
-def _caso(carpetas, texto: str, nombre: str, asunto: str, reglas) -> Identificacion | None:
+def _campos_caso(carpetas, *, como_objeto: bool = False, **opciones):
+    """El caso por las reglas del Docs Agent (ubicar.py). Sin `carpetas` no se busca:
+    {} o None. Con `como_objeto` devuelve la Ubicacion; si no, sus campos."""
     if carpetas is None:
-        return None
-    return identificar(texto, carpetas, asunto=asunto, nombre_archivo=nombre, reglas=reglas)
-
-
-def _campos_caso(caso: Identificacion | None) -> dict:
-    """Los campos del caso para la ficha; nada si no se pasaron carpetas."""
-    if caso is None:
-        return {}
-    campos = {
-        "case_folder": caso.carpeta,
-        "case_folder_id": caso.carpeta_id or None,
-        "case_rule": caso.regla or None,
-        "case_found_by": caso.se_decidio or None,
-        "case_confirmed": caso.confirmado,
-        "case_because": caso.razon,
-    }
-    if caso.candidatos:
-        campos["case_candidates"] = caso.candidatos
-    return campos
+        return None if como_objeto else {}
+    ubicacion = ubicar(carpetas, **opciones)
+    return ubicacion if como_objeto else ubicacion.campos()
 
 
 # VARIOS ARCHIVOS A LA VEZ. Un correo trae varios adjuntos y una bandeja varios
