@@ -17,6 +17,7 @@ Dos mitades que se usan juntas o por separado:
     UBICAR      la carpeta del matter con las reglas del Docs Agent, y el renombrado
     SUBCARPETA  la seccion del matter por tipo, con las reglas de Mario (plantillas A/B/C)
     NOMBRE      '{fecha} Doc {n} {tipo}, {remitente}', con el nombre original al lado
+    JSONL       el Claude-{ID}.jsonl del matter: linea por id de SharePoint, incremental
 
 `con_que` y `se_decidio` no son decorativos: sin ellos no se sabe a quien atribuir
 un acierto ni un error, y un digito mal leido por OCR se confunde con uno mal
@@ -33,8 +34,9 @@ from .extraccion import Extraccion, extraer
 from .limpieza import limpiar_documento, limpiar_ficha
 from .recepcion import Clave, RegistroDeClaves, clave_del_documento
 from .ubicar import Ubicacion, ubicar
-from . import (calidad, clasificacion, equivalencias, expediente, extraccion, ficha, limpieza,
-               nombre, ocr, paddle_ocr, plantillas, recepcion, reglas, subcarpeta)
+from . import (calidad, clasificacion, equivalencias, expediente, extraccion, ficha,
+               jsonl_matter, limpieza, nombre, ocr, paddle_ocr, plantillas, recepcion, reglas,
+               subcarpeta)
 
 __all__ = ["COMO_SE_LEE", "Clave", "Destino", "Extraccion", "Identificacion", "RegistroDeClaves",
            "cabecera", "calidad", "clasificacion", "clave_del_documento", "donde_archivar",
@@ -43,4 +45,4 @@ __all__ = ["COMO_SE_LEE", "Clave", "Destino", "Extraccion", "Identificacion", "R
            "fichas_de", "identificar", "indices_del_documento", "indices_en",
            "leer_con_detalle", "lector_para", "limpiar_documento", "limpiar_ficha", "limpieza",
            "ocr", "paddle_ocr", "plantilla_de", "plantillas", "recepcion", "reglas",
-           "nombre", "registrar", "subcarpeta", "Ubicacion", "ubicar"]
+           "jsonl_matter", "nombre", "registrar", "subcarpeta", "Ubicacion", "ubicar"]
