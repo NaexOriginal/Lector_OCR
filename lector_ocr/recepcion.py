@@ -113,6 +113,54 @@ def capa_de_texto(datos: bytes, extension: str, paginas: int = PAGINAS_DEL_SELLO
 
 
 # --------------------------------------------------------------------------- #
+# La huella de SharePoint
+#
+# QUICKXORHASH ES LA QUE SHAREPOINT YA TIENE de cada archivo: viene en el listado
+# (file.hashes.quickXorHash) sin bajar nada. Calcularla tambien de lo que llega
+# permite comparar un documento nuevo con los 430.000 que ya estan en Matters -- y
+# cargar la base de claves con todos ellos -- sin descargar 329 GB.
+#
+# El algoritmo (de Microsoft): cada byte se mezcla con XOR en un registro circular de
+# 160 bits, desplazado 11 bits por byte; al final se mezcla el largo en los ultimos 8
+# bytes y se codifica en base64. Como el XOR es asociativo y la posicion se repite
+# cada 160 bytes, primero se pliegan los bytes en 160 columnas y despues se rota cada
+# una a su sitio: con numpy, un archivo de 20 MB son milisegundos.
+ANCHO_QXH = 160
+DESPLAZAMIENTO_QXH = 11
+
+
+def quickxorhash(datos: bytes) -> str:
+    """El quickXorHash de SharePoint / OneDrive, en base64 como lo da Graph."""
+    import base64
+
+    datos = datos or b""
+    try:
+        import numpy as np
+
+        arreglo = np.frombuffer(datos, dtype=np.uint8)
+        relleno = (-len(arreglo)) % ANCHO_QXH
+        if relleno:
+            arreglo = np.concatenate([arreglo, np.zeros(relleno, dtype=np.uint8)])
+        columnas = (np.bitwise_xor.reduce(arreglo.reshape(-1, ANCHO_QXH), axis=0)
+                    if len(arreglo) else np.zeros(ANCHO_QXH, dtype=np.uint8))
+        columnas = [int(c) for c in columnas]
+    except ImportError:
+        columnas = [0] * ANCHO_QXH
+        for i, b in enumerate(datos):
+            columnas[i % ANCHO_QXH] ^= b
+    mascara = (1 << ANCHO_QXH) - 1
+    registro = 0
+    for k, b in enumerate(columnas):
+        if b:
+            v = b << ((k * DESPLAZAMIENTO_QXH) % ANCHO_QXH)
+            registro ^= (v & mascara) | (v >> ANCHO_QXH)
+    salida = bytearray(registro.to_bytes(ANCHO_QXH // 8, "little"))
+    for i, b in enumerate(len(datos).to_bytes(8, "little")):
+        salida[ANCHO_QXH // 8 - 8 + i] ^= b
+    return base64.b64encode(bytes(salida)).decode("ascii")
+
+
+# --------------------------------------------------------------------------- #
 # La clave
 
 
@@ -122,6 +170,7 @@ class Clave:
 
     huella: str                      # 'sha256:...' de los bytes; siempre
     clave: str = ""                  # 'nyed:1-26-cv-04354:29'; vacia si falta alguna pieza
+    huella_sp: str = ""              # 'qxh:...', el quickXorHash: la de SharePoint
     tipo: str = ""                   # 'federal' | 'nyscef' | ''
     tribunal: str = ""               # 'nyed' | 'kings' | 'appellate-division-2nd-dept'
     caso: str = ""                   # '1-26-cv-04354' | '507148-2026'
@@ -132,8 +181,8 @@ class Clave:
 
     @property
     def llaves(self) -> list[str]:
-        """Todo lo que la identifica: la clave si la hay, y la huella siempre."""
-        return [k for k in (self.clave, self.huella) if k]
+        """Todo lo que la identifica: la clave si la hay, y las huellas siempre."""
+        return [k for k in (self.clave, self.huella_sp, self.huella) if k]
 
 
 def _primera(*candidatos: tuple[str, str]) -> tuple[str, str, list[tuple[str, str]]]:
@@ -152,7 +201,8 @@ def clave_del_documento(datos: bytes, extension: str = "pdf", *, asunto: str = "
     `texto` es la capa de texto si quien llama ya la tiene; si no se pasa, se lee la
     de la primera pagina (sin OCR).
     """
-    resultado = Clave(huella="sha256:" + hashlib.sha256(datos or b"").hexdigest())
+    resultado = Clave(huella="sha256:" + hashlib.sha256(datos or b"").hexdigest(),
+                      huella_sp="qxh:" + quickxorhash(datos or b""))
     if texto is None:
         texto = capa_de_texto(datos, extension)
     texto = texto or ""

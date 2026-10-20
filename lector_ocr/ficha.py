@@ -116,7 +116,7 @@ def ficha_de(nombre: str, datos: bytes, plantilla: str = "Foreclosure", *,
     # antes que todo: el Index del sello o del aviso es la regla 1 del paso 5.
     clave = clave_del_documento(datos, extension, asunto=asunto, nombre_archivo=nombre)
     claves = {"document_key": clave.clave or None, "doc_number": clave.numero or None,
-              "content_hash": clave.huella}
+              "content_hash": clave.huella, "sharepoint_hash": clave.huella_sp}
 
     def sin_leer(motivo: str) -> dict:
         # Sin texto, el caso sale solo del asunto, el nombre y el sello.

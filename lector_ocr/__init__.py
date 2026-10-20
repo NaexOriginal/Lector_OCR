@@ -11,6 +11,7 @@ Dos mitades que se usan juntas o por separado:
     ARCHIVAR    de que tipo es el documento y adonde va en cada plantilla
     EXPEDIENTE  a que caso pertenece, con las reglas de reglas_ruteo.toml
     RECEPCION   la clave del documento (tribunal, caso, numero) y 'gana la primera copia'
+    CLAVES_DB   esas claves en PostgreSQL, con la llave como clave primaria
     CALIDAD     cada pagina con texto utilizable, un reintento y ocr_warning si no
     LIMPIEZA    reglas 1 a 4 sobre el texto leido, antes de extraer nada
     EXTRACCION  caratula (demandantes y demandados), quien lo manda y las fechas
@@ -34,7 +35,7 @@ from .extraccion import Extraccion, extraer
 from .limpieza import limpiar_documento, limpiar_ficha
 from .recepcion import Clave, RegistroDeClaves, clave_del_documento
 from .ubicar import Ubicacion, ubicar
-from . import (calidad, clasificacion, equivalencias, expediente, extraccion, ficha,
+from . import (calidad, clasificacion, claves_db, equivalencias, expediente, extraccion, ficha,
                jsonl_matter, limpieza, nombre, ocr, paddle_ocr, plantillas, recepcion, reglas,
                subcarpeta)
 
@@ -45,4 +46,4 @@ __all__ = ["COMO_SE_LEE", "Clave", "Destino", "Extraccion", "Identificacion", "R
            "fichas_de", "identificar", "indices_del_documento", "indices_en",
            "leer_con_detalle", "lector_para", "limpiar_documento", "limpiar_ficha", "limpieza",
            "ocr", "paddle_ocr", "plantilla_de", "plantillas", "recepcion", "reglas",
-           "jsonl_matter", "nombre", "registrar", "subcarpeta", "Ubicacion", "ubicar"]
+           "claves_db", "jsonl_matter", "nombre", "registrar", "subcarpeta", "Ubicacion", "ubicar"]
