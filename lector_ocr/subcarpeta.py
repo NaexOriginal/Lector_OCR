@@ -31,9 +31,9 @@ Initial Conference' donde dice '06_Case Management Plan'. Se prueba primero el n
 exacto y despues la etiqueta sin el numero. Las secciones SIN numero ('Motions',
 'Notices') no cuentan: Mario las da por duplicados que hay que fusionar.
 
-LA PLANTILLA SALE DE LAS SECCIONES QUE TIENE EL MATTER y, si no lo dicen (715 matters
-del arbol solo tienen 00_Unfiled y poco mas), del ID interno: 6 foreclosure (B), 7
-RESPA/QWR (C), el resto A.
+LA PLANTILLA SALE DEL ID INTERNO, su primer digito: 6 foreclosure (B), 7 RESPA/QWR (C),
+el resto A (tambien el 5, Chapter 7/13). No se deduce de las secciones que hay en
+SharePoint: lo que hay alli es lo que hay que corregir (Rafael, 20-oct).
 
 LOS QUE EL TIPO NO SABE COLOCAR (seccion 3 de Mario): 'Letter', 'Servicer
 correspondence' y 'Email' van a la seccion de correspondencia si el matter la tiene;
@@ -146,18 +146,6 @@ SECCIONES_DE_CORRESPONDENCIA = ["19_Correspondence", "04_Correspondence"]
 # --------------------------------------------------------------------------- #
 # La plantilla de un matter
 
-# Las secciones que solo tiene una plantilla. Las compartidas no dicen nada
-# ('07_Discovery' es de A; '06_Discovery' de C).
-PROPIAS = {
-    _A: {"01_Documents from client", "02_FCRA Dispute", "03_Complaint", "04_Service of Process",
-         "05_Answers", "06_Case Management Plan", "07_Discovery", "08_Depositions", "09_Motions",
-         "10_Stipulations", "11_Notices", "12_Settlement Documents", "13_Status Reports",
-         "14_Billing and Invoices"},
-    _B: {"01_General", "02_Loss Mitigation", "03_Litigation", "04_Correspondence"},
-    _C: {"01_QWR Documents", "02_Complaint", "03_Service of Process", "04_Answers",
-         "05_Case Management Plan", "06_Discovery", "07_Depositions", "08_Motions",
-         "09_Stipulations", "10_Notices", "11_Subpoena"},
-}
 POR_MATERIA = {"6": _B, "7": _C}   # el primer digito del ID interno; el resto, A
 
 NUMERADA = re.compile(r"^(\d{2})_(.+)$")
@@ -175,29 +163,12 @@ def _etiqueta(seccion: str) -> str:
     return (m.group(2) if m else s).strip().lower()
 
 
-def _es(seccion: str, propia: str) -> bool:
-    """La seccion es esa de la tabla: mismo numero y el nombre empieza igual
-    ('06_Case Management Plan Initial Conference' es '06_Case Management Plan')."""
-    return seccion == propia or (seccion[:3] == propia[:3] and (
-        _etiqueta(seccion) == _etiqueta(propia)
-        or _etiqueta(seccion).startswith(_etiqueta(propia) + " ")))
-
-
-def plantilla_del_matter(secciones: Sequence[str] | None, id_interno: str = "") -> tuple[str, str]:
-    """(plantilla, por que). Por las secciones propias que tiene; si no lo dicen, por
-    el ID interno."""
-    if secciones:
-        limpias = [_limpia(s) for s in secciones if NUMERADA.match(_limpia(s))]
-        puntos = {p: sum(1 for s in limpias if any(_es(s, propia) for propia in propias))
-                  for p, propias in PROPIAS.items()}
-        mejor = max(puntos.values())
-        ganadoras = [p for p, n in puntos.items() if n == mejor]
-        if mejor and len(ganadoras) == 1:
-            return ganadoras[0], f"the matter has {mejor} section(s) of template {ganadoras[0]}"
+def plantilla_del_matter(id_interno: str = "") -> tuple[str, str]:
+    """(plantilla, por que), por el primer digito del ID interno."""
     if id_interno:
         p = POR_MATERIA.get(id_interno[:1], _A)
-        return p, f"the sections do not tell; internal id {id_interno} starts with {id_interno[:1]}"
-    return _A, "no sections and no internal id: template A by default"
+        return p, f"internal id {id_interno} starts with {id_interno[:1]}: template {p}"
+    return _A, "no internal id: template A by default"
 
 
 # --------------------------------------------------------------------------- #
@@ -244,7 +215,7 @@ def elegir(tipo: str, secciones: Sequence[str] | None = None, *, id_interno: str
     que no esta comprobado (`existe=None`).
     `del_cliente`: el documento lo mando el propio cliente (para los correos).
     """
-    plantilla, por_que = plantilla_del_matter(secciones, id_interno)
+    plantilla, por_que = plantilla_del_matter(id_interno)
     sale = Subcarpeta(plantilla=plantilla)
 
     if tipo in CORRESPONDENCIA:
