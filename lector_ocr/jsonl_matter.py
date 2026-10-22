@@ -26,6 +26,12 @@ se REEMPLAZA (el archivo se releyo). Mismo nombre e id distinto: son dos archivo
 SE ESCRIBE INCREMENTAL: se anade o se reemplaza una linea y se recalcula la cabecera.
 Ya no es una foto del momento en que se genero.
 
+UNA COPIA EXACTA LLEVA 'copied_from', como en armar_casos y migrar_jsonl: si otra linea
+del mismo JSONL tiene el mismo hash (el quickXorHash de SharePoint) y otro id, la nueva
+es una copia y apunta al id de la primera. La copia conserva su linea y su texto: cuando
+se retiren los duplicados no importa cual se quede. Office no da falsos positivos:
+SharePoint reescribe esos archivos al guardarlos y su hash cambia.
+
 SOLO EL COMPLAINT CREA EL JSONL de un matter (decision de Rafael, 20-oct): es el primer
 documento de un caso. Si llega otro a un matter sin JSONL, no se crea: el documento se
 archiva igual y se avisa ('not_written'). Los de anios anteriores los genera la
@@ -101,6 +107,26 @@ def leer(contenido: bytes | str | None) -> Jsonl:
     return jsonl
 
 
+def _hash(linea: dict) -> str:
+    """El quickXorHash de la linea, venga como 'sharepoint_hash' ('qxh:...') o 'hash'."""
+    valor = str(linea.get("sharepoint_hash") or linea.get("hash") or "")
+    return valor[4:] if valor.startswith("qxh:") else valor
+
+
+def copia_de(lineas: Iterable[dict], linea: dict) -> str | None:
+    """El id de la primera linea con el mismo hash y otro id, o None. Si esa primera es a su
+    vez una copia, el de su original: todas las copias apuntan al mismo archivo. Y si el
+    original es esta misma linea (se releyo el original), no es copia de nada."""
+    huella, propio = _hash(linea), linea.get("sharepoint_id")
+    if not huella:
+        return None
+    for otra in lineas:
+        if otra.get("sharepoint_id") != propio and _hash(otra) == huella:
+            original = otra.get("copied_from") or otra.get("sharepoint_id")
+            return None if original == propio else original
+    return None
+
+
 def linea_de(ficha: dict, sharepoint_id: str) -> dict:
     """La linea del JSONL a partir de la ficha: el id delante, el archivo con el nombre y
     la seccion con que QUEDA guardado, y el resto de la ficha detras."""
@@ -173,6 +199,9 @@ def anotar(contenido: bytes | str | None, ficha: dict, *, sharepoint_id: str, ma
         accion = "added"
 
     linea = linea_de(ficha, sharepoint_id)
+    original = copia_de(jsonl.documentos, linea)
+    if original:
+        linea["copied_from"] = original
     anadidos = 1
     for i, existente in enumerate(jsonl.lineas):
         if existente.get("sharepoint_id") == sharepoint_id:
@@ -211,7 +240,12 @@ def mover(origen: bytes | str | None, destino: bytes | str | None, sharepoint_id
     a.lineas = [l for l in a.lineas if l.get("sharepoint_id") != sharepoint_id]
     a.cabecera = recalcular(a, anadidos=-1)
     b.lineas = [l for l in b.lineas if l.get("sharepoint_id") != sharepoint_id]
-    b.lineas.append({**linea, **(cambios or {})})
+    # 'copied_from' es de su matter: en el destino se vuelve a mirar.
+    nueva = {k: v for k, v in {**linea, **(cambios or {})}.items() if k != "copied_from"}
+    original = copia_de(b.documentos, nueva)
+    if original:
+        nueva["copied_from"] = original
+    b.lineas.append(nueva)
     b.cabecera = recalcular(b, matter=matter_destino, carpeta_id=carpeta_id_destino, anadidos=1)
     return a.a_bytes(), b.a_bytes(), "line moved with the file; both summaries recalculated"
 
