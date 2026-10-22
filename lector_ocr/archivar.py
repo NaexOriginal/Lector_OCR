@@ -75,9 +75,9 @@ def donde_archivar(nombre: str, datos: bytes | None = None,
     y no se vuelve a leer. Sin esto, ficha_de leia cada archivo dos veces -- una para
     el texto y otra para clasificar --, y un escaneo pasaba DOS veces por el OCR.
     """
-    tipo, _ = clasificacion.tipo_de_nombre(nombre)
-    if tipo is not None and tipo.destino(plantilla):
-        return Destino(tipo.destino(plantilla), tipo.nombre, tipo.certeza, "el nombre")
+    por_nombre, _ = clasificacion.tipo_de_nombre(nombre)
+    if por_nombre is not None and por_nombre.destino(plantilla):
+        return Destino(por_nombre.destino(plantilla), por_nombre.nombre, por_nombre.certeza, "el nombre")
 
     if texto is not None:
         texto = texto[: max(paginas, 1) * CARACTERES_POR_PAGINA]
@@ -91,6 +91,11 @@ def donde_archivar(nombre: str, datos: bytes | None = None,
     # y no sirve para agrupar ni para saber cuanto fiarse.
     tipo, evidencia, donde = clasificacion.tipo_de_texto(texto)
     lector = str(con_que).split(" (")[0]
+    if tipo is None and por_nombre is not None:
+        # El nombre ya decia que es ('Deed.pdf') aunque la tabla vieja no le de carpeta en
+        # esta plantilla. Antes se buscaba en el cuerpo y una mencion lo tapaba; ahora el
+        # cuerpo no decide, y el tipo del nombre no se pierde.
+        return Destino("", por_nombre.nombre, por_nombre.certeza, "el nombre", lector)
     if tipo is None or not tipo.destino(plantilla):
         return Destino("", tipo.nombre if tipo else "", "", "", lector, evidencia[:160])
     return Destino(tipo.destino(plantilla), tipo.nombre, tipo.certeza,

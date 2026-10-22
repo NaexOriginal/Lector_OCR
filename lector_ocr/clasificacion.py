@@ -23,8 +23,11 @@ ponerlo ARRIBA del tipo generico que lo contiene.
 
 DONDE aparece la frase importa tanto como que aparezca. En la cabecera del documento
 es el titulo; trescientas lineas mas abajo es una mencion de pasada -- una demanda
-nombra la mocion de la contraparte sin ser una mocion. Por eso `tipo_de_texto`
-devuelve tambien si fue titulo o mencion, y quien decide da mas peso al titulo.
+nombra la mocion de la contraparte sin ser una mocion. POR ESO UNA MENCION NO DECIDE
+(Rafael, 22-oct): solo cuentan el nombre del archivo y la cabecera. Y en la cabecera,
+una CITA tampoco: 'AFFIRMATION IN OPPOSITION TO DEFENDANT'S NOTICE OF MOTION' nombra
+la mocion de otro, no es una mocion (es el fallo de la seccion 5 de Mario). Un
+documento que solo nombra otros tipos se queda sin tipo: sin colocar y pendiente.
 
 Uso:
     .venv\Scripts\python.exe clasificacion.py
@@ -630,6 +633,28 @@ def que_hace(nombre_de_tipo: str) -> str:
     return QUE_HACE.get(nombre_de_tipo, "")
 
 # --------------------------------------------------------------------------- #
+# Lo que va justo antes de un tipo cuando el documento lo CITA en vez de serlo: 'in
+# opposition to (Defendant's) Notice of Motion', 'pursuant to the Stipulation', 'Re:
+# Summons and Complaint'. Se mira el mismo renglon y el anterior, hasta 60 caracteres
+# de por medio ('in support of plaintiff's cross-motion and in opposition to the ...').
+CITA = re.compile(
+    r"(?:\bin\s+(?:further\s+)?(?:support|opposition|reply|response)\s+(?:of|to)"
+    r"|\b(?:opposition|reply|response|objection|answer)s?\s+to"
+    r"|\bpursuant\s+to|\bannexed\s+(?:to|hereto)|\battached\s+(?:to|hereto)"
+    r"|\bre\s*:|\bregarding|\bwith\s+respect\s+to|\bin\s+connection\s+with"
+    r"|\bfiled\s+(?:on|in)|\bcopy\s+of)"
+    r"[^.;]{0,60}$", re.I)
+
+
+def _es_cita(texto: str, coincidencia: re.Match) -> bool:
+    """El tipo esta CITADO (lo antecede 'in opposition to', 'pursuant to'...)."""
+    return bool(CITA.search(texto[max(0, coincidencia.start() - 90): coincidencia.start()]))
+
+
+def _primera_no_citada(tipo: Tipo, trozo: str) -> re.Match | None:
+    return next((m for m in tipo.patron.finditer(trozo) if not _es_cita(trozo, m)), None)
+
+
 def _renglon(texto: str, coincidencia: re.Match) -> str:
     """El renglon del que salio el hallazgo. Es la prueba, recortada."""
     inicio = texto.rfind("\n", 0, coincidencia.start()) + 1
@@ -639,11 +664,13 @@ def _renglon(texto: str, coincidencia: re.Match) -> str:
 
 
 def tipo_de_texto(texto: str) -> tuple[Tipo | None, str, str]:
-    """(tipo, evidencia, donde). `donde` es 'titulo' o 'mencion'.
+    """(tipo, evidencia, donde). `donde` es 'titulo' (o '' si no hay tipo).
 
-    Se mira primero la cabecera entera y solo despues el cuerpo: un escrito que
-    NOMBRA una mocion no es una mocion, y esa diferencia es la que separa
-    clasificar de adivinar.
+    Solo se mira la cabecera: un escrito que NOMBRA una mocion no es una mocion, y
+    esa diferencia es la que separa clasificar de adivinar. Hasta el 22-oct, si la
+    cabecera no decia nada se buscaba en el cuerpo entero ('mencion'); asi una
+    oposicion acababa como la mocion que contesta. Ya no: sin titulo no hay tipo.
+    Y en la cabecera no cuenta lo CITADO (ver CITA).
 
     Y SE EMPIEZA POR UNA VENTANA ESTRECHA, la del TITULO. Con la cabecera entera de
     900 caracteres entraba el certificado de servicio, que lo lleva casi todo lo que
@@ -669,13 +696,12 @@ def tipo_de_texto(texto: str) -> tuple[Tipo | None, str, str]:
     if not texto or not texto.strip():
         return None, "", ""
     ventanas = (("titulo", texto[:TITULO], True),
-                ("titulo", texto[:CABECERA], False),
-                ("mencion", texto, False))
+                ("titulo", texto[:CABECERA], False))
     for donde, trozo, solo_especificos in ventanas:
         for tipo in TIPOS:
             if solo_especificos and tipo.generico:
                 continue
-            encontrado = tipo.patron.search(trozo)
+            encontrado = _primera_no_citada(tipo, trozo)
             if encontrado:
                 return tipo, _renglon(trozo, encontrado), donde
     return None, "", ""
