@@ -12,6 +12,7 @@ Dos mitades que se usan juntas o por separado:
     EXPEDIENTE  a que caso pertenece, con las reglas de reglas_ruteo.toml
     RECEPCION   la clave del documento (tribunal, caso, numero) y 'gana la primera copia'
     CLAVES_DB   esas claves en PostgreSQL, con la llave como clave primaria
+    MOVIMIENTOS lo que se mueve o renombra en SharePoint, para poder deshacerlo
     CALIDAD     cada pagina con texto utilizable, un reintento y ocr_warning si no
     LIMPIEZA    reglas 1 a 4 sobre el texto leido, antes de extraer nada
     EXTRACCION  caratula (demandantes y demandados), quien lo manda y las fechas
@@ -36,8 +37,8 @@ from .limpieza import limpiar_documento, limpiar_ficha
 from .recepcion import Clave, RegistroDeClaves, clave_del_documento
 from .ubicar import Ubicacion, ubicar
 from . import (calidad, clasificacion, claves_db, equivalencias, expediente, extraccion, ficha,
-               jsonl_matter, limpieza, nombre, ocr, paddle_ocr, plantillas, recepcion, reglas,
-               subcarpeta)
+               jsonl_matter, limpieza, movimientos_db, nombre, ocr, paddle_ocr, plantillas,
+               recepcion, reglas, subcarpeta)
 
 __all__ = ["COMO_SE_LEE", "Clave", "Destino", "Extraccion", "Identificacion", "RegistroDeClaves",
            "cabecera", "calidad", "clasificacion", "clave_del_documento", "donde_archivar",
@@ -46,4 +47,5 @@ __all__ = ["COMO_SE_LEE", "Clave", "Destino", "Extraccion", "Identificacion", "R
            "fichas_de", "identificar", "indices_del_documento", "indices_en",
            "leer_con_detalle", "lector_para", "limpiar_documento", "limpiar_ficha", "limpieza",
            "ocr", "paddle_ocr", "plantilla_de", "plantillas", "recepcion", "reglas",
-           "claves_db", "jsonl_matter", "nombre", "registrar", "subcarpeta", "Ubicacion", "ubicar"]
+           "claves_db", "jsonl_matter", "movimientos_db", "nombre", "registrar", "subcarpeta",
+           "Ubicacion", "ubicar"]
